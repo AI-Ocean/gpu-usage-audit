@@ -14,12 +14,10 @@ Published by [AIOcean](https://github.com/AI-Ocean) as the awareness
 funnel for the **ocean-all** GPU resource management platform. The
 daemon itself is fully offline and never touches the network.
 
-> **Status:** v0.2.0a0 — Python rewrite *in progress*. The 5-section
-> report and daemon are being ported from the Go v0.1.0 design. The
-> previous Go implementation is preserved at git tag `v0.1.0` and
-> branch [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive)
-> and remains downloadable from the
-> [v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
+> **Status:** v0.2.0a1 (Python alpha) — `daemon` and `report` work
+> end-to-end on **fake** telemetry. Real NVML lands in v0.2.0 stable.
+> The Go v0.1.0 implementation remains downloadable at tag `v0.1.0`
+> / branch [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
 ## What you get (target shape — being ported from Go v0.1.0)
 
@@ -57,9 +55,9 @@ the active / idle-held / truly-idle split. **`idle-held` rows are
 the embarrassing category**: a process is holding GPU memory but
 the SM utilization is below 10%.
 
-## Install (v0.2.0a0 — `version` only while the rewrite is in progress)
+## Install
 
-The intended UX once daemon/report land:
+Once PyPI publish is enabled, the intended UX is:
 
 ```sh
 # Zero-install: uv resolves the right Python and runs in an isolated env
@@ -69,8 +67,17 @@ uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 pip install gpu-usage-audit
 ```
 
-If you want the working v0.1.0 today (Go, single binary), download from
-the [v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
+For v0.2.0a1 the alpha wheel + sdist are attached to the
+[v0.2.0a1 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.2.0a1).
+Download `gpu_usage_audit-0.2.0a1-py3-none-any.whl` and run:
+
+```sh
+pip install ./gpu_usage_audit-0.2.0a1-py3-none-any.whl
+gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+```
+
+If you want the Go v0.1.0 binary, see the
+[v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
 
 ## Development
 

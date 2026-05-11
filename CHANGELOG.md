@@ -6,22 +6,51 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-### Changed
-- **Language switch: Go → Python.** v0.2.0 onward is a Python rewrite
-  distributed via `uv`/`pip`. The Go implementation that shipped as
-  v0.1.0 is preserved at tag `v0.1.0` and branch `go-archive`.
-
-  Rationale: the next project (ocean-all) is in Python and the target
-  user base (ML practitioners) is more comfortable with `uvx ...` /
-  `pip install ...` than downloading a static binary. uv resolves the
-  Python interpreter automatically, so the operational story (a single
-  command, no system-Python prerequisite) is preserved.
-
 ### Planned for v0.2.0
-- Port the 5-section report and daemon loop from the Go v0.1.0 design.
-- Real NVML telemetry via `pynvml` (optional dependency, fakes still
+- Real NVML telemetry via `pynvml` (optional dependency, FakeTier still
   available for development).
-- PyPI / uvx distribution.
+- PyPI / uvx distribution once trusted publishing is set up.
+- Identity resolution sourced from the daemon's view of fake processes,
+  so `FakeTier` runs do not accidentally resolve the local user.
+
+## [0.2.0a1] — 2026-05-11
+
+First Python alpha. The 5-section report and daemon loop are ported
+from the Go v0.1.0 design; no real NVML yet.
+
+### Added
+- `daemon` subcommand — FakeTier sampling into SQLite with anti-drift
+  scheduling and signal-driven shutdown (`threading.Event` cancels
+  `stop.wait(delay)`).
+- `report` subcommand — five-section retrospective report:
+  - §1 Headline three-bar (active / idle-held / truly-idle).
+  - §2 Waste (`idle GPU-hours`, `equivalently-unused GPUs`).
+  - §3 Per-GPU breakdown.
+  - §4 Top identities (loginuid-resolved or `unknown`).
+  - §5 Day-of-week × hour activity heatmap.
+- `FakeTier` — deterministic 5-tick GPU-0 cycle
+  (active → idle-held → truly-idle → repeat), invariant GPU-1/2.
+- `Classify` / `Summarize` / `detect_env_kind` (`bare`/`docker`/`k8s`)
+  ports of the Go v0.1.0 decisions.
+- SQLite layer: `journal_mode=WAL`, `busy_timeout=5000`, indexes on
+  `(gpu_uuid, ts)`, transactional `write_snapshot`.
+- `version` / `help` subcommands alongside `--version` / `--help`.
+- `_duration` argparse type: `"30s"` / `"1h"` / `"200ms"` parsing
+  (Go `time.ParseDuration` subset).
+- Test suite (85 tests, standard `testing`-style with `pytest`): unit
+  tests for every domain module plus CLI smoke and integration fixtures.
+- GitHub Actions CI: `ruff` + `mypy --strict` + `pytest` on every push
+  / PR via `uv sync --all-groups --locked`.
+- Release workflow: tag push (`v*`) → `uv build` → GitHub Release with
+  sdist + wheel attached, release notes extracted from this CHANGELOG.
+
+### Notes
+- This is an *alpha* — the binary's `--help` works, daemon/report run
+  end-to-end on fake telemetry, but real NVML is not wired yet.
+- PyPI distribution requires trusted-publishing setup; until then the
+  wheel/sdist are downloadable from the GitHub Release page.
+- Go v0.1.0 remains downloadable at the `v0.1.0` tag / `go-archive`
+  branch.
 
 ## [0.1.0] — 2026-05-11
 

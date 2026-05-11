@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Sync dependencies
+        run: uv sync --all-groups --locked
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Extract release notes for this tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # CHANGELOG 의 "## [X.Y.Z..." entry 부터 다음 "## " 직전까지 추출.
+          # awk pattern 의 `[` 가 regex character class 로 해석되지 않도록
+          # index() literal prefix 매치 사용.
+          VERSION="${TAG#v}"
+          awk -v hdr="## [${VERSION}]" '
+            index($0, hdr) == 1 { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "No release notes found for ${TAG} in CHANGELOG.md" >&2
+            exit 1
+          fi
+          echo "--- release_notes.md ---"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # 알파/베타 prerelease 자동 표기 — "a" / "b" / "rc" 가 들어가면
+          # GitHub Release 의 prerelease 플래그를 켠다.
+          PRERELEASE_FLAG=""
+          case "$TAG" in
+            *a*|*b*|*rc*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+          gh release create "$TAG" $PRERELEASE_FLAG \
+            --title "$TAG" \
+            --notes-file release_notes.md \
+            dist/*
+
+  # PyPI publish — 사용자가 PyPI 측에 trusted publisher 등록한 뒤 활성화.
+  # https://docs.pypi.org/trusted-publishers/
+  #
+  # publish:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   environment: release
+  #   permissions:
+  #     id-token: write
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: dist
+  #         path: dist
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
