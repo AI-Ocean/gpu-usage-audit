@@ -159,14 +159,45 @@ CREATE TABLE IF NOT EXISTS proc_sample (
     mem_used_mb   INTEGER  NOT NULL,
     loginuid_user TEXT
 );
+
+-- (gpu_uuid, ts) 컬럼 순서: report 쿼리들이 *카드 단위* 로 시간 범위를
+-- 자르는 패턴 (헤드라인/waste/유저별 모두) → uuid 가 leading column.
+-- IF NOT EXISTS 로 매 실행 idempotent.
+CREATE INDEX IF NOT EXISTS idx_gpu_sample_uuid_ts  ON gpu_sample(gpu_uuid, ts);
+CREATE INDEX IF NOT EXISTS idx_proc_sample_uuid_ts ON proc_sample(gpu_uuid, ts);
 `
 
-// OpenDB 는 SQLite 파일을 열고 스키마를 적용한다.
+// OpenDB 는 SQLite 파일을 열고 PRAGMA + 스키마를 적용한다.
 // "sqlite" 드라이버 이름은 위쪽 blank import 가 등록해 둔 이름.
+//
+// PRAGMA 는 *스키마 적용 전* 에 박는다. WAL 모드는 DB 단위 영속 설정이라
+// 한 번만 잡아도 파일에 기록되지만, busy_timeout 은 *연결 단위* 라 매
+// OpenDB 마다 다시 설정해야 한다 — 둘을 같이 두는 게 안전.
+//
+// WAL: 데몬이 write 하는 동안 report 가 같은 DB 를 읽을 수 있게.
+//      rollback journal 모드는 write 시 reader 를 막아 SQLITE_BUSY 유발.
+// busy_timeout=5000: 그래도 *writer 끼리* 충돌 가능 (예: 향후 두 데몬).
+//      즉시 실패 대신 5초까지 자동 재시도.
 func OpenDB(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	// PRAGMA journal_mode 는 쿼리 형태라 Exec 대신 QueryRow 로 결과를
+	// 읽어야 안전 — 드라이버에 따라 Exec 가 결과 row 를 버려서 모드 변경
+	// 실패를 *조용히* 삼킬 수 있다.
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set journal_mode=WAL: %w", err)
+	}
+	if mode != "wal" {
+		_ = db.Close()
+		return nil, fmt.Errorf("expected journal_mode=wal, got %q", mode)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
@@ -1007,8 +1038,8 @@ func runDaemonCmd(args []string) int {
 }
 
 // runReportCmd 는 누적 DB 를 *읽기 전용* 으로 열어 §1 Headline 을 낸다.
-// 데몬과 *동시에* 돌 수 있도록 SQLite WAL 이 보장 (우리 v2 는 아직 WAL
-// 설정 안 함 — 단일 reader 라 일단 OK. 동시성 필요해지면 추가).
+// 데몬과 *동시에* 돌 수 있도록 OpenDB 가 journal_mode=WAL 을 잡고
+// busy_timeout 으로 짧은 락 충돌을 흡수한다.
 func runReportCmd(args []string) int {
 	fs := flag.NewFlagSet("v2 report", flag.ExitOnError)
 	dbPath := fs.String("db", "", "SQLite 데이터베이스 경로 (필수)")

@@ -6,12 +6,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+- `OpenDB` now sets `journal_mode=WAL` and `busy_timeout=5000` before
+  applying the schema, so the daemon and `report` can run against the
+  same database file without `SQLITE_BUSY` on short reads.
+
+### Added
+- Indexes `idx_gpu_sample_uuid_ts` and `idx_proc_sample_uuid_ts` on
+  `(gpu_uuid, ts)` — report queries slice by card over a time window.
+
 ### Planned for v0.2.0
 - Real NVML tier implementation (build tag `nvml_real`) so the daemon
   collects actual GPU telemetry on NVIDIA hosts, not only the bundled
   fake source.
-- WAL pragma and indexes on `(gpu_uuid, ts)` for concurrent daemon/report
-  execution and larger windows.
 
 ## [0.1.0] — 2026-05-11
 
