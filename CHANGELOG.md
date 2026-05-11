@@ -6,21 +6,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-### Changed
-- `OpenDB` now sets `journal_mode=WAL` and `busy_timeout=5000` before
-  applying the schema, so the daemon and `report` can run against the
-  same database file without `SQLITE_BUSY` on short reads.
-
-### Added
-- Indexes `idx_gpu_sample_uuid_ts` and `idx_proc_sample_uuid_ts` on
-  `(gpu_uuid, ts)` — report queries slice by card over a time window.
-
 ### Planned for v0.2.0
 - Real NVML tier implementation (build tag `nvml_real`) so the daemon
   collects actual GPU telemetry on NVIDIA hosts, not only the bundled
   fake source.
 
 ## [0.1.0] — 2026-05-11
+
+First public release.
 
 ### Added
 - `daemon` subcommand — periodic GPU/process sampling into SQLite with
@@ -42,12 +35,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `/proc/1/cgroup`.
 - Three-table schema (`host`, `gpu_sample`, `proc_sample`) — minimal
   surface aligned to the idle-held question.
-- Apache 2.0 license, Makefile (`build` / `run` / `clean`),
+- SQLite `journal_mode=WAL` + `busy_timeout=5000`, so the daemon and
+  `report` can share the same database file without `SQLITE_BUSY`.
+- Indexes `idx_gpu_sample_uuid_ts` and `idx_proc_sample_uuid_ts` on
+  `(gpu_uuid, ts)` for card-keyed time-window queries.
+- `help` / `version` subcommands (alongside `--help` / `--version`).
+- Unit and DB-layer test coverage (standard `testing` only, no
+  third-party deps): `Classify`, `DetectEnvKind`, `Summarize`,
+  `FakeTier` phase cycle, and all `Load*` report queries against
+  a real on-disk SQLite fixture.
+- GitHub Actions CI: `vet` + race-enabled `test` + `build` on every
+  push and pull request.
+- Apache 2.0 license, Makefile (`build` / `run` / `test` / `clean`),
   `--version` injected at link time.
 
 ### Notes
-- v0.1.0 is the *first cut* derived from the gpu-usage-audit-v2 design
-  exercise. Telemetry is fake by default; real NVML support arrives
-  in v0.2.0.
-- The legacy `gpu-usage-audit` (v0.1.x) project is being archived in
-  favour of this rewrite.
+- v0.1.0 ships fake telemetry only — the daemon is exercisable on any
+  host. Real NVML support is targeted for v0.2.0.
+- The legacy `gpu-usage-audit` (v0.1.x) project is archived in favour
+  of this rewrite.
