@@ -41,6 +41,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 이전 태그까지의 git log 추출용 — fetch-depth 0 으로 전체 history.
+          fetch-depth: 0
 
       - name: Download dist
         uses: actions/download-artifact@v4
@@ -50,6 +53,31 @@ jobs:
 
       - name: List artifacts
         run: ls -la dist/
+
+      - name: Generate release notes from git log
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # gh --generate-notes 는 PR 머지 기반이라 직접 push 한 commit 이
+          # 본문에 안 들어간다. 우리는 commit 메시지가 conventional 이라
+          # git log 직접 추출이 더 의미 있다.
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          {
+            if [ -n "$PREV" ]; then
+              echo "## Changes since $PREV"
+              echo
+              git log --pretty=format:"- %s (%h)" "${PREV}..${TAG}"
+              echo
+              echo
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV}...${TAG}"
+            else
+              echo "## Initial release"
+              echo
+              git log --pretty=format:"- %s (%h)" "${TAG}"
+            fi
+          } > release_notes.md
+          echo "--- release_notes.md ---"
+          cat release_notes.md
 
       - name: Create GitHub Release
         env:
@@ -62,12 +90,9 @@ jobs:
           case "$TAG" in
             *a*|*b*|*rc*) PRERELEASE_FLAG="--prerelease" ;;
           esac
-          # --generate-notes: 이전 태그 이후의 commit 메시지로 release notes
-          # 자동 생성. CHANGELOG 수동 유지 부담 ↓, commit 메시지가 source
-          # of truth.
           gh release create "$TAG" $PRERELEASE_FLAG \
             --title "$TAG" \
-            --generate-notes \
+            --notes-file release_notes.md \
             dist/*
 
   # PyPI publish — 사용자가 PyPI 측에 trusted publisher 등록한 뒤 활성화.
