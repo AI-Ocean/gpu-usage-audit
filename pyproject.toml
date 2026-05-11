@@ -14,8 +14,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: System :: Monitoring",
 ]
-# 런타임 의존성 0 (sqlite3 는 stdlib). v0.2.0 에서 NVML 추가 시 pynvml.
+# 코어 런타임 의존성 0 (sqlite3 는 stdlib). FakeTier 로 GPU 없이도 동작.
+# 실 NVIDIA GPU 텔레메트리를 보려면 `[nvml]` extra 를 같이 설치 — 아래.
 dependencies = []
+
+[project.optional-dependencies]
+# 진짜 GPU 환경에서만 의미 있는 의존성.
+# 설치: `uv pip install gpu-usage-audit[nvml]` 또는
+#       `pip install gpu-usage-audit[nvml]`
+# uv 의 zero-install 동선: `uvx --with nvidia-ml-py gpu-usage-audit daemon ...`
+nvml = ["nvidia-ml-py>=12.535"]
 
 [project.scripts]
 # pip / uvx 가 만들 entry point. `uvx gpu-usage-audit ...` 한 줄로 실행.
@@ -41,6 +49,9 @@ dev = [
     "pytest-cov>=5.0",
     "mypy>=1.10",
     "ruff>=0.5",
+    # dev 환경에서 NVMLTier 의 변환 로직을 *모킹으로* 검증할 수 있게
+    # import 자체는 가능해야 함 (실제 nvmlInit 은 GPU 없는 머신에서 실패).
+    "nvidia-ml-py>=12.535",
 ]
 
 # ── pytest ──────────────────────────────────────────────────────
