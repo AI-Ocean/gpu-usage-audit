@@ -94,3 +94,8 @@ python_version = "3.12"
 strict = true
 warn_unreachable = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# pynvml (nvidia-ml-py) 은 type stub 없음 — strict 모드에서 미사용 처리.
+module = ["pynvml"]
+ignore_missing_imports = true
