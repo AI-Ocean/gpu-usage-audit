@@ -1,4 +1,4 @@
-module github.com/lee/gpu-usage-audit-v2
+module github.com/AI-Ocean/gpu-usage-audit
 
 go 1.26.2
 

@@ -65,14 +65,14 @@ the SM utilization is below 10%.
 ### From source
 
 ```sh
-go install github.com/lee/gpu-usage-audit-v2/...@latest
+go install github.com/AI-Ocean/gpu-usage-audit/...@latest
 ```
 
 Or build locally:
 
 ```sh
-git clone https://github.com/lee/gpu-usage-audit-v2
-cd gpu-usage-audit-v2
+git clone https://github.com/AI-Ocean/gpu-usage-audit
+cd gpu-usage-audit
 make build       # → ./dist/v2 (~9 MB, single static binary)
 ```
 
