@@ -51,26 +51,6 @@ jobs:
       - name: List artifacts
         run: ls -la dist/
 
-      - name: Extract release notes for this tag
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          # CHANGELOG 의 "## [X.Y.Z..." entry 부터 다음 "## " 직전까지 추출.
-          # awk pattern 의 `[` 가 regex character class 로 해석되지 않도록
-          # index() literal prefix 매치 사용.
-          VERSION="${TAG#v}"
-          awk -v hdr="## [${VERSION}]" '
-            index($0, hdr) == 1 { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md > release_notes.md
-          if [ ! -s release_notes.md ]; then
-            echo "No release notes found for ${TAG} in CHANGELOG.md" >&2
-            exit 1
-          fi
-          echo "--- release_notes.md ---"
-          cat release_notes.md
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,9 +62,12 @@ jobs:
           case "$TAG" in
             *a*|*b*|*rc*) PRERELEASE_FLAG="--prerelease" ;;
           esac
+          # --generate-notes: 이전 태그 이후의 commit 메시지로 release notes
+          # 자동 생성. CHANGELOG 수동 유지 부담 ↓, commit 메시지가 source
+          # of truth.
           gh release create "$TAG" $PRERELEASE_FLAG \
             --title "$TAG" \
-            --notes-file release_notes.md \
+            --generate-notes \
             dist/*
 
   # PyPI publish — 사용자가 PyPI 측에 trusted publisher 등록한 뒤 활성화.

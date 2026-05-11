@@ -32,7 +32,7 @@ gpu-usage-audit = "gpu_usage_audit.__main__:main"
 [project.urls]
 Homepage = "https://github.com/AI-Ocean/gpu-usage-audit"
 Issues = "https://github.com/AI-Ocean/gpu-usage-audit/issues"
-Changelog = "https://github.com/AI-Ocean/gpu-usage-audit/blob/main/CHANGELOG.md"
+Releases = "https://github.com/AI-Ocean/gpu-usage-audit/releases"
 
 [build-system]
 requires = ["hatchling"]
