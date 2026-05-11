@@ -9,13 +9,12 @@ from __future__ import annotations
 import subprocess
 import sys
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
 from gpu_usage_audit import __version__
-from gpu_usage_audit.__main__ import _duration, _make_tier, build_parser, main
-from gpu_usage_audit.nvml import NVMLTier
-from gpu_usage_audit.tier import FakeTier
+from gpu_usage_audit.__main__ import _duration, build_parser, main
 
 
 def test_version_string_is_nonempty() -> None:
@@ -26,13 +25,13 @@ def test_version_string_is_nonempty() -> None:
 def test_parser_registers_subcommands() -> None:
     p = build_parser()
     # 알려진 subcommands 모두 등록됐는지.
-    for cmd in ("daemon", "report", "version", "help"):
+    for cmd in ("daemon", "report", "demo", "version", "help"):
         ns = p.parse_args([cmd, *_required_args_for(cmd)])
         assert ns.command == cmd
 
 
 def _required_args_for(cmd: str) -> list[str]:
-    # daemon/report 는 --db 필수. version/help 는 추가 인자 없음.
+    # daemon/report 는 --db 필수. demo 는 --db 옵셔널. version/help 는 추가 인자 없음.
     if cmd in ("daemon", "report"):
         return ["--db", "/tmp/dummy.db"]
     return []
@@ -68,6 +67,33 @@ def test_cli_entry_point_runs_in_subprocess() -> None:
     assert result.stdout.strip() == __version__
 
 
+def test_demo_command_records_and_prints_report(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # demo: 작은 ticks 로 self-contained 시연. stdout 에 §1~§5 등장,
+    # DB 에 sample 적재 확인.
+    db_path = tmp_path / "demo.db"
+    rc = main(
+        [
+            "demo",
+            "--db",
+            str(db_path),
+            "--ticks",
+            "3",
+            "--interval",
+            "10ms",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    # §1~§5 다 등장.
+    for section in ("§1 Headline", "§2 Waste", "§3 Per-GPU", "§4 Top identities", "§5"):
+        assert section in captured.out, f"{section} not in demo output"
+    # DB 파일 생성됐는지.
+    assert db_path.exists()
+
+
 @pytest.mark.parametrize(
     ("text", "want"),
     [
@@ -76,30 +102,17 @@ def test_cli_entry_point_runs_in_subprocess() -> None:
         ("200ms", timedelta(milliseconds=200)),
         ("0.5m", timedelta(seconds=30)),
         ("2d", timedelta(days=2)),
+        # 상한 없음 — 365d 도 OK.
+        ("365d", timedelta(days=365)),
     ],
 )
 def test_duration_parser_valid(text: str, want: timedelta) -> None:
     assert _duration(text) == want
 
 
-@pytest.mark.parametrize("bad", ["30", "h", "1y", "1.5", "1 s", ""])
+@pytest.mark.parametrize("bad", ["30", "h", "1y", "1.5", "1 s", "", "1w"])
 def test_duration_parser_invalid(bad: str) -> None:
     import argparse
 
     with pytest.raises(argparse.ArgumentTypeError):
         _duration(bad)
-
-
-def test_make_tier_fake() -> None:
-    assert isinstance(_make_tier("fake"), FakeTier)
-
-
-def test_make_tier_nvml_constructs_without_probe() -> None:
-    # NVMLTier() 생성 자체는 NVML 호출 없음 — Probe 시점에야 에러 가능.
-    # 이 분리가 CLI 가 stderr 로 친화 메시지를 낼 수 있게 해줌.
-    assert isinstance(_make_tier("nvml"), NVMLTier)
-
-
-def test_make_tier_unknown_raises() -> None:
-    with pytest.raises(ValueError, match="unknown tier"):
-        _make_tier("xxx")

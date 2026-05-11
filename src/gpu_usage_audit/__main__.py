@@ -1,12 +1,13 @@
 """CLI entry point. `python -m gpu_usage_audit` 와 `uvx gpu-usage-audit` 둘 다 여기로.
 
-서브커맨드 라인업 (v0.2.0a1):
-  daemon   FakeTier 위에서 한 틱씩 SQLite 에 적재
+서브커맨드:
+  daemon   실 NVIDIA NVML 텔레메트리를 SQLite 에 적재 (운영용, 백그라운드)
   report   누적 DB 에서 §1~§5 retrospective 리포트
+  demo     데모용 — fake telemetry 로 30 tick 적재 + 즉시 report (한 프로세스)
   version  버전 출력
   help     usage 출력
 
-argparse stdlib 사용 — Go flag 와 동등한 라인업, 의존성 0.
+argparse stdlib 사용 — 의존성 0.
 """
 
 from __future__ import annotations
@@ -16,8 +17,10 @@ import logging
 import re
 import socket
 import sys
+import tempfile
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from . import __version__
 from .daemon import install_signal_handlers, run_daemon
@@ -41,7 +44,7 @@ from .report import (
     load_top_identities,
     load_waste,
 )
-from .tier import FakeTier, Tier
+from .tier import FakeTier
 
 _DURATION_RE = re.compile(r"^(?P<v>\d+(?:\.\d+)?)(?P<u>ms|s|m|h|d)$")
 _DURATION_UNITS = {
@@ -56,7 +59,7 @@ _DURATION_UNITS = {
 def _duration(s: str) -> timedelta:
     """argparse type: "30s", "1h", "200ms" → timedelta.
 
-    Go 의 time.ParseDuration 부분집합 — v0.1.0 의 인터페이스 유지.
+    지원 단위: ms, s, m, h, d. 상한 없음 — `--since 365d` 도 받음.
     """
     m = _DURATION_RE.match(s)
     if not m:
@@ -65,7 +68,7 @@ def _duration(s: str) -> timedelta:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """argparse parser 구성. Go 의 flag.NewFlagSet 디스패처와 동등 의도."""
+    """argparse parser 구성. daemon (운영) / demo (학습) / report (조회) 의 분리."""
     parser = argparse.ArgumentParser(
         prog="gpu-usage-audit",
         description="Surface idle-held NVIDIA GPU memory.",
@@ -78,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_daemon = sub.add_parser(
         "daemon",
-        help="Sample GPU/process telemetry into SQLite at a fixed interval",
+        help="Real NVML sampling into SQLite (long-running, NVIDIA host required)",
     )
     p_daemon.add_argument("--db", required=True, help="Path to SQLite database file")
     p_daemon.add_argument(
@@ -86,13 +89,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=_duration,
         default=timedelta(seconds=30),
         help="Tick interval (e.g. 30s, 1m, 200ms) [default: 30s]",
-    )
-    p_daemon.add_argument(
-        "--tier",
-        choices=("fake", "nvml"),
-        default="fake",
-        help="Telemetry source: 'fake' (deterministic stub, default) "
-        "or 'nvml' (real NVIDIA driver — requires [nvml] extra)",
     )
     p_daemon.set_defaults(func=_cmd_daemon)
 
@@ -121,24 +117,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_report.set_defaults(func=_cmd_report)
 
+    p_demo = sub.add_parser(
+        "demo",
+        help="Run a self-contained demo with fake telemetry (no GPU required)",
+    )
+    p_demo.add_argument(
+        "--db",
+        default=None,
+        help="SQLite database path [default: a fresh temporary file]",
+    )
+    p_demo.add_argument(
+        "--ticks",
+        type=int,
+        default=30,
+        help="Number of fake ticks to record before printing the report [default: 30]",
+    )
+    p_demo.add_argument(
+        "--interval",
+        type=_duration,
+        default=timedelta(seconds=1),
+        help="Tick interval for the fake daemon [default: 1s]",
+    )
+    p_demo.set_defaults(func=_cmd_demo)
+
     sub.add_parser("version", help="Print version")
     sub.add_parser("help", help="Show this message")
 
     return parser
 
 
-def _make_tier(kind: str) -> Tier:
-    """--tier 선택 → Tier 인스턴스. NVML 실패 시 명확한 stderr 메시지."""
-    if kind == "fake":
-        return FakeTier()
-    if kind == "nvml":
-        return NVMLTier()
-    raise ValueError(f"unknown tier: {kind!r}")
-
-
 def _cmd_daemon(args: argparse.Namespace) -> int:
+    """실 NVML 데몬 — 운영용."""
     conn = open_db(args.db)
-    tier = _make_tier(args.tier)
+    tier = NVMLTier()
     try:
         try:
             driver = tier.probe()
@@ -165,10 +176,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         print(f"\n{args.db}: {total} total gpu_sample rows")
         return 0
     finally:
-        # NVMLTier 인 경우 nvmlShutdown 까지 호출하려면 close 가 필요.
-        # FakeTier 는 close 가 없어도 무방 — hasattr 로 polymorphic.
-        if hasattr(tier, "close"):
-            tier.close()
+        tier.close()
         conn.close()
 
 
@@ -192,11 +200,64 @@ def _cmd_report(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point. argv=None 이면 sys.argv 사용.
+def _cmd_demo(args: argparse.Namespace) -> int:
+    """데모 — fake telemetry 로 한 프로세스 안에서 daemon + report.
 
-    logging 은 INFO 레벨로 stderr 출력 — Go log.Printf 와 같은 동선.
+    GPU 없는 머신에서 *형식과 동선* 을 보여주는 1분짜리 셀프 컨테인드
+    시나리오. 임시 DB 자동 생성 (또는 --db 명시), N tick 적재 후 즉시
+    report 출력하고 종료.
     """
+    if args.db is None:
+        tmpdir = tempfile.mkdtemp(prefix="gpu-usage-audit-demo-")
+        db_path = str(Path(tmpdir) / "demo.db")
+        print(f"(using temporary database: {db_path})", file=sys.stderr)
+    else:
+        db_path = args.db
+
+    conn = open_db(db_path)
+    try:
+        tier = FakeTier()
+        driver = tier.probe()
+        host = HostMeta(
+            hostname=socket.gethostname() or "unknown",
+            env_kind=detect_env_kind("/proc"),
+            driver_version=driver,
+            first_seen=datetime.now(UTC),
+        )
+
+        # 데몬 단계: 결정적 fake 데이터를 N tick 적재. signal handler 안 박는다 —
+        # demo 는 *짧고 자동 종료* 가 의도라 SIGINT 도 그냥 KeyboardInterrupt 로.
+        print(
+            f"# Recording {args.ticks} fake ticks at {args.interval} interval...",
+            file=sys.stderr,
+        )
+        # demo 는 system user lookup 안 함 — FakeTier 가 식별자 미리 박음.
+        run_daemon(
+            tier=tier,
+            db=conn,
+            host=host,
+            interval=args.interval,
+            max_ticks=args.ticks,
+            out=sys.stderr,
+        )
+
+        # 리포트 단계: 데이터 *전체* 윈도우 (since 를 충분히 크게).
+        print(file=sys.stderr)
+        window = max(args.interval * args.ticks * 2, timedelta(minutes=1))
+        cutoff = datetime.now(UTC) - window
+        loaded_host = load_host(conn)
+        render_headline(sys.stdout, loaded_host, load_headline(conn, cutoff), window, width=60)
+        render_waste(sys.stdout, load_waste(conn, cutoff, args.interval))
+        render_per_gpu(sys.stdout, load_per_gpu(conn, cutoff))
+        render_top_identities(sys.stdout, load_top_identities(conn, cutoff, args.interval))
+        render_heatmap(sys.stdout, load_heatmap(conn, cutoff))
+        return 0
+    finally:
+        conn.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point. argv=None 이면 sys.argv 사용."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(message)s",
