@@ -10,10 +10,6 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-Published by [AIOcean](https://github.com/AI-Ocean) as the awareness
-funnel for the **ocean-all** GPU resource management platform. The
-daemon itself is fully offline and never touches the network.
-
 > **Status:** v0.2.0 — daemon (`--tier fake` **or** `--tier nvml`) and
 > report work end-to-end. The Go v0.1.0 implementation remains
 > downloadable at tag `v0.1.0` / branch
@@ -61,10 +57,6 @@ The bundled `FakeTier` produces a deterministic 5-tick GPU workload —
 active learning → idle-held memory → cleanup — so you can see the
 report shape on any Linux host before you point it at real hardware.
 
-Grab the wheel from the
-[latest release](https://github.com/AI-Ocean/gpu-usage-audit/releases/latest)
-and:
-
 ```sh
 WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl"
 
@@ -90,25 +82,87 @@ pip install 'gpu-usage-audit[nvml] @ <WHEEL>'
 gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
 ```
 
-Run the report from another shell:
-
-```sh
-gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
-```
-
 > `--tier nvml` requires the NVIDIA driver and `libnvidia-ml.so.1`
 > reachable from `LD_LIBRARY_PATH`. On a driver-less host the daemon
-> exits with `NVML Shared Library Not Found` and a hint to install
-> the extra.
+> exits with `NVML Shared Library Not Found`.
 
-## Future install path
+## Usage
 
-Once PyPI publish is wired, the same will work without the URL:
+`gpu-usage-audit` is two commands sharing one SQLite file:
 
-```sh
-uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
-pip install 'gpu-usage-audit[nvml]'
+| Command  | What it does                                                |
+| -------- | ----------------------------------------------------------- |
+| `daemon` | Long-running background process. Samples GPU/process state on every tick and **appends** to the database. Stop with Ctrl+C (SIGINT) or `systemctl stop`. |
+| `report` | One-shot read against the accumulated database. Safe to run **while the daemon is still writing** — SQLite WAL mode handles the concurrency. |
+
+### `daemon`
+
 ```
+gpu-usage-audit daemon --db PATH [--interval D] [--tier {fake,nvml}]
+```
+
+- `--db PATH` — SQLite file to write to. Created if missing. WAL mode
+  is enabled automatically.
+- `--interval D` (default `30s`) — how often to sample. Accepts `30s`,
+  `1m`, `200ms`, etc. Shorter intervals give finer time resolution but
+  more rows; `30s` is a good default for real workloads.
+- `--tier fake|nvml` (default `fake`) — telemetry source. Use `nvml`
+  on real NVIDIA hosts; `fake` runs on any Linux box for the demo.
+
+Each tick prints a one-line summary to stdout:
+
+```
+Tick 0  ts=12:34:56.789  GPU-0=active      GPU-1=idle-held   GPU-2=truly-idle
+```
+
+On shutdown it prints the cumulative row count.
+
+### `report`
+
+```
+gpu-usage-audit report --db PATH [--since D] [--interval D] [--width N]
+```
+
+- `--db PATH` — same SQLite file the daemon writes to.
+- `--since D` (default `1h`) — the report window. `--since 24h` gives
+  yesterday's slice, `--since 7d` gives the week, etc.
+- `--interval D` (default `30s`) — **must match what the daemon used**.
+  This is how §2 (Waste) and §4 (Top identities) convert tick counts
+  to GPU-hours. Mismatched intervals → wrong GPU-hours.
+- `--width N` (default `60`) — width of the §1 three-bar in characters.
+
+### Operational notes
+
+- **Same `--interval` on both sides.** If you ran the daemon with
+  `--interval 30s`, run `report --interval 30s` too.
+- **Let it run for a while.** §1/§3 are meaningful after one tick;
+  §4 (Top identities) needs hours; §5 (Heatmap) needs days.
+- **WAL leaves sidecar files** (`gua.db-wal`, `gua.db-shm`). They are
+  cleaned up automatically when the last connection closes.
+- **DB size**: ~50 MB per host per 30 days at 12 GPUs (extrapolated
+  from Go v0.1.0; not yet re-measured for the Python rewrite).
+
+### Running as a systemd service
+
+For a long-running deployment, drop a unit file in
+`/etc/systemd/system/gpu-usage-audit.service`:
+
+```ini
+[Unit]
+Description=gpu-usage-audit daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gpu-usage-audit daemon --db /var/lib/gua/gua.db --tier nvml --interval 30s
+Restart=on-failure
+User=gua
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then `systemctl enable --now gpu-usage-audit`.
 
 ## How the classification works
 
@@ -128,14 +182,6 @@ util <  10 AND mem <= 100   → truly-idle    (the card is genuinely free)
 The 100 MB threshold absorbs the PyTorch/TF runtime baseline so
 importing torch doesn't count as "holding the GPU".
 
-## Resource budget
-
-Not yet measured for the Python rewrite. The Go v0.1.0 cost (for
-reference) was < 0.5 % of one CPU at a 30 s tick cadence, < 30 MB
-RSS, and ~50 MB / host / 30 days at 12 GPUs. The Python daemon does
-the same work with the same schema — expect the same disk footprint;
-CPU/RSS to be re-measured once it runs on a real GPU host.
-
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/) (uv pins the Python version
@@ -151,24 +197,16 @@ uv run mypy                      # type-check (strict)
 uv run gpu-usage-audit version   # exercise the CLI entry point
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff + mypy + pytest on every push
-and PR. Tag pushes (`v*`) build sdist + wheel and create a GitHub
-Release with auto-generated notes.
+CI runs ruff + mypy + pytest on every push and PR. Tag pushes (`v*`)
+build sdist + wheel and create a GitHub Release with auto-generated
+notes.
 
 ## Non-goals
 
-Deliberately out of scope:
-
-- Multi-host aggregation / `--combine` / push-to-cloud
-- Kubernetes pod-name resolution (cgroup-level identity only)
-- Quotas, scheduling, or kill-idle enforcement
-- Web dashboard or live-monitoring view (use `nvtop`, DCGM, Grafana)
-
-Those belong to a platform layer above the host. **That's where
-[ocean-all](https://github.com/AI-Ocean) comes in** — if this tool
-shows you that a meaningful slice of your fleet is idle-held, the
-next step is shared-pool scheduling, which is a problem this tool
-intentionally does not try to solve.
+This is a **single-host retrospective** tool. Live dashboards, multi-host
+aggregation, quotas, and pod-name resolution are out of scope — those
+belong above the host layer. If this tool surfaces enough idle-held to
+make scheduling worth solving, see [ocean-all](https://github.com/AI-Ocean).
 
 ## License
 
