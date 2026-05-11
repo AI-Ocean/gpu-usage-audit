@@ -68,7 +68,9 @@ select = [
     "RUF",  # ruff-specific
 ]
 ignore = [
-    "E501",  # line-too-long (formatter 가 처리)
+    "E501",   # line-too-long (formatter 가 처리)
+    "RUF002", # 한국어 docstring 안 비-ASCII 문자 — 의도된 표기 (— 같은 dash 포함).
+    "RUF003", # 한국어 주석 안 `×` (곱셈) 같은 기호도 의도된 표기.
 ]
 
 [tool.ruff.format]
