@@ -14,16 +14,16 @@ Published by [AIOcean](https://github.com/AI-Ocean) as the awareness
 funnel for the **ocean-all** GPU resource management platform. The
 daemon itself is fully offline and never touches the network.
 
-> **Status:** v0.2.0 — `daemon` (fake **or** real NVIDIA NVML) and
-> `report` work end-to-end. The Go v0.1.0 implementation remains
+> **Status:** v0.2.0 — daemon (`--tier fake` **or** `--tier nvml`) and
+> report work end-to-end. The Go v0.1.0 implementation remains
 > downloadable at tag `v0.1.0` / branch
 > [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
-## What you get (target shape — being ported from Go v0.1.0)
+## What you get
 
 ```
 $ gpu-usage-audit report --db /var/lib/gua/gua.db --since 1h
-gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1h0m0s
+gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 
 §1 Headline
   █████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░
@@ -50,69 +50,67 @@ gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1h0m0s
   Mon               .
 ```
 
-The 3-bar collapses every card × every tick over the window into
-the active / idle-held / truly-idle split. **`idle-held` rows are
-the embarrassing category**: a process is holding GPU memory but
-the SM utilization is below 10%.
+The 3-bar collapses every card × every tick over the window into the
+active / idle-held / truly-idle split. **`idle-held` rows are the
+embarrassing category**: a process is holding GPU memory but the SM
+utilization is below 10%.
 
-## Install
+## Quick demo (no GPU required)
 
-Until PyPI publish is enabled, install the wheel from the
-[v0.2.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.2.0):
+The bundled `FakeTier` produces a deterministic 5-tick GPU workload —
+active learning → idle-held memory → cleanup — so you can see the
+report shape on any Linux host before you point it at real hardware.
 
-```sh
-# Recommended: uvx (no global install, isolated environment)
-uvx --from https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl \
-    gpu-usage-audit version
-
-# Or with pip
-pip install https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl
-```
-
-Once PyPI publish is wired, the intended UX is:
+Grab the wheel from the
+[latest release](https://github.com/AI-Ocean/gpu-usage-audit/releases/latest)
+and:
 
 ```sh
-uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
-pip install gpu-usage-audit
+WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl"
+
+# Start a short-interval daemon (fake telemetry):
+uvx --from "$WHEEL" gpu-usage-audit daemon --db /tmp/gua.db --interval 1s &
+
+# Wait a few seconds, then run the report from another shell:
+sleep 5
+uvx --from "$WHEEL" gpu-usage-audit report --db /tmp/gua.db --since 1m --interval 1s
 ```
 
-### Real NVIDIA GPU telemetry
+## Real NVIDIA GPU telemetry
 
-The default `--tier fake` works on any host. For real telemetry on
-NVIDIA GPU machines, install the `[nvml]` extra (depends on
-`nvidia-ml-py`):
+On an NVIDIA host, install the `[nvml]` extra and pass `--tier nvml`:
 
 ```sh
-# pip
-pip install 'gpu-usage-audit[nvml]'
+# One-shot via uvx (recommended)
+uvx --from "$WHEEL" --with nvidia-ml-py \
+    gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
 
-# uvx — bring nvidia-ml-py along for a one-shot run
-uvx --with nvidia-ml-py gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
+# Or a persistent install
+pip install 'gpu-usage-audit[nvml] @ <WHEEL>'
+gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
 ```
 
-Then run the report from another shell:
+Run the report from another shell:
 
 ```sh
 gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
 ```
 
-If you want the Go v0.1.0 binary instead, see the
-[v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
+> `--tier nvml` requires the NVIDIA driver and `libnvidia-ml.so.1`
+> reachable from `LD_LIBRARY_PATH`. On a driver-less host the daemon
+> exits with `NVML Shared Library Not Found` and a hint to install
+> the extra.
 
-## Development
+## Future install path
 
-Requires [uv](https://docs.astral.sh/uv/) (uv pins the Python version
-automatically; `requires-python = ">=3.12"`).
+Once PyPI publish is wired, the same will work without the URL:
 
 ```sh
-git clone https://github.com/AI-Ocean/gpu-usage-audit
-cd gpu-usage-audit
-uv sync                          # create .venv, install dev deps
-uv run pytest                    # run the test suite
-uv run gpu-usage-audit version   # exercise the CLI entry point
+uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+pip install 'gpu-usage-audit[nvml]'
 ```
 
-## How the classification works (carried over from v0.1.0)
+## How the classification works
 
 Each tick of the daemon records:
 
@@ -129,6 +127,33 @@ util <  10 AND mem <= 100   → truly-idle    (the card is genuinely free)
 
 The 100 MB threshold absorbs the PyTorch/TF runtime baseline so
 importing torch doesn't count as "holding the GPU".
+
+## Resource budget
+
+Not yet measured for the Python rewrite. The Go v0.1.0 cost (for
+reference) was < 0.5 % of one CPU at a 30 s tick cadence, < 30 MB
+RSS, and ~50 MB / host / 30 days at 12 GPUs. The Python daemon does
+the same work with the same schema — expect the same disk footprint;
+CPU/RSS to be re-measured once it runs on a real GPU host.
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/) (uv pins the Python version
+automatically; `requires-python = ">=3.12"`).
+
+```sh
+git clone https://github.com/AI-Ocean/gpu-usage-audit
+cd gpu-usage-audit
+uv sync                          # create .venv, install dev deps
+uv run pytest                    # run the test suite
+uv run ruff check                # lint
+uv run mypy                      # type-check (strict)
+uv run gpu-usage-audit version   # exercise the CLI entry point
+```
+
+CI (`.github/workflows/ci.yml`) runs ruff + mypy + pytest on every push
+and PR. Tag pushes (`v*`) build sdist + wheel and create a GitHub
+Release with auto-generated notes.
 
 ## Non-goals
 
