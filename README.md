@@ -10,9 +10,9 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** v0.2.0 — daemon (`--tier fake` **or** `--tier nvml`) and
-> report work end-to-end. The Go v0.1.0 implementation remains
-> downloadable at tag `v0.1.0` / branch
+> **Status:** v0.3.0 — `daemon` runs on a real NVIDIA host, `demo` runs
+> anywhere (no GPU required), `report` reads either. The Go v0.1.0
+> implementation remains downloadable at tag `v0.1.0` / branch
 > [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
 ## What you get
@@ -51,71 +51,68 @@ active / idle-held / truly-idle split. **`idle-held` rows are the
 embarrassing category**: a process is holding GPU memory but the SM
 utilization is below 10%.
 
-## Quick demo (no GPU required)
+## Demo (no GPU required)
 
-The bundled `FakeTier` produces a deterministic 5-tick GPU workload —
-active learning → idle-held memory → cleanup — so you can see the
-report shape on any Linux host before you point it at real hardware.
+The `demo` subcommand records 30 ticks of fake telemetry and prints the
+report — all in one process, no second shell needed.
 
 ```sh
-WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl"
+WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.3.0/gpu_usage_audit-0.3.0-py3-none-any.whl"
 
-# Start a short-interval daemon (fake telemetry):
-uvx --from "$WHEEL" gpu-usage-audit daemon --db /tmp/gua.db --interval 1s &
-
-# Wait a few seconds, then run the report from another shell:
-sleep 5
-uvx --from "$WHEEL" gpu-usage-audit report --db /tmp/gua.db --since 1m --interval 1s
+uvx --from "$WHEEL" gpu-usage-audit demo
 ```
 
-## Real NVIDIA GPU telemetry
+The bundled `FakeTier` produces a deterministic 5-tick workload —
+active learning → idle-held memory → cleanup — so the output is the
+same every run. Adjust the shape with `--ticks N` and `--interval D`.
 
-On an NVIDIA host, install the `[nvml]` extra and pass `--tier nvml`:
+## Real NVIDIA GPU host
+
+On an NVIDIA host, install the `[nvml]` extra and run `daemon`:
 
 ```sh
 # One-shot via uvx (recommended)
 uvx --from "$WHEEL" --with nvidia-ml-py \
-    gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
+    gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 
 # Or a persistent install
 pip install 'gpu-usage-audit[nvml] @ <WHEEL>'
-gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
+gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 ```
 
-> `--tier nvml` requires the NVIDIA driver and `libnvidia-ml.so.1`
-> reachable from `LD_LIBRARY_PATH`. On a driver-less host the daemon
-> exits with `NVML Shared Library Not Found`.
+Run the report from another shell:
+
+```sh
+uvx --from "$WHEEL" gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
+```
+
+> The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
+> driver-less host it exits with `NVML Shared Library Not Found`. For a
+> driverless box, use `demo` instead.
 
 ## Usage
 
-`gpu-usage-audit` is two commands sharing one SQLite file:
+`gpu-usage-audit` has three commands sharing one SQLite file:
 
 | Command  | What it does                                                |
 | -------- | ----------------------------------------------------------- |
-| `daemon` | Long-running background process. Samples GPU/process state on every tick and **appends** to the database. Stop with Ctrl+C (SIGINT) or `systemctl stop`. |
+| `daemon` | Long-running background process. Samples real NVML telemetry on every tick and **appends** to the database. Stop with Ctrl+C (SIGINT) or `systemctl stop`. NVIDIA host required. |
 | `report` | One-shot read against the accumulated database. Safe to run **while the daemon is still writing** — SQLite WAL mode handles the concurrency. |
+| `demo`   | Self-contained showcase. Records N fake ticks and immediately prints the report. No GPU, no second shell, no operational meaning — just to see the output shape. |
 
 ### `daemon`
 
 ```
-gpu-usage-audit daemon --db PATH [--interval D] [--tier {fake,nvml}]
+gpu-usage-audit daemon --db PATH [--interval D]
 ```
 
 - `--db PATH` — SQLite file to write to. Created if missing. WAL mode
-  is enabled automatically.
+  enabled automatically.
 - `--interval D` (default `30s`) — how often to sample. Accepts `30s`,
-  `1m`, `200ms`, etc. Shorter intervals give finer time resolution but
-  more rows; `30s` is a good default for real workloads.
-- `--tier fake|nvml` (default `fake`) — telemetry source. Use `nvml`
-  on real NVIDIA hosts; `fake` runs on any Linux box for the demo.
+  `1m`, `200ms`, etc.
 
-Each tick prints a one-line summary to stdout:
-
-```
-Tick 0  ts=12:34:56.789  GPU-0=active      GPU-1=idle-held   GPU-2=truly-idle
-```
-
-On shutdown it prints the cumulative row count.
+Each tick prints a one-line summary to stdout; on shutdown the cumulative
+row count is printed.
 
 ### `report`
 
@@ -124,12 +121,26 @@ gpu-usage-audit report --db PATH [--since D] [--interval D] [--width N]
 ```
 
 - `--db PATH` — same SQLite file the daemon writes to.
-- `--since D` (default `1h`) — the report window. `--since 24h` gives
-  yesterday's slice, `--since 7d` gives the week, etc.
+- `--since D` (default `1h`) — the report window. **No upper bound** —
+  `--since 365d` is accepted. The effective window is min(`--since`, age
+  of oldest sample), so passing a huge `--since` is the same as "all
+  data". Units: `ms`, `s`, `m`, `h`, `d` (no `w`; use `7d`).
 - `--interval D` (default `30s`) — **must match what the daemon used**.
   This is how §2 (Waste) and §4 (Top identities) convert tick counts
   to GPU-hours. Mismatched intervals → wrong GPU-hours.
 - `--width N` (default `60`) — width of the §1 three-bar in characters.
+
+### `demo`
+
+```
+gpu-usage-audit demo [--db PATH] [--ticks N] [--interval D]
+```
+
+- `--db PATH` (optional) — if omitted, a fresh temporary database is
+  created and its path is printed to stderr.
+- `--ticks N` (default `30`) — how many fake ticks to record before
+  printing the report.
+- `--interval D` (default `1s`) — tick spacing.
 
 ### Operational notes
 
@@ -154,7 +165,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/gpu-usage-audit daemon --db /var/lib/gua/gua.db --tier nvml --interval 30s
+ExecStart=/usr/local/bin/gpu-usage-audit daemon --db /var/lib/gua/gua.db --interval 30s
 Restart=on-failure
 User=gua
 
@@ -194,7 +205,7 @@ uv sync                          # create .venv, install dev deps
 uv run pytest                    # run the test suite
 uv run ruff check                # lint
 uv run mypy                      # type-check (strict)
-uv run gpu-usage-audit version   # exercise the CLI entry point
+uv run gpu-usage-audit demo      # see the report shape locally
 ```
 
 CI runs ruff + mypy + pytest on every push and PR. Tag pushes (`v*`)
