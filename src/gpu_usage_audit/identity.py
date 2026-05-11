@@ -1,0 +1,55 @@
+"""PID → 사용자명 해석. `/proc/<pid>/loginuid` 의 systemd 메커니즘.
+
+`loginuid` 는 sshd/login 이 세션 시작 시 박는 *원래 로그인 사용자* 의
+UID 다 — `seteuid` 로 root 가 되더라도 추적 가능. NoLoginUID 인 경우
+(daemon spawn 등) UINT32_MAX (4294967295) 가 들어감.
+
+설계: `_parse_loginuid` 를 분리해 *순수 함수* 로 테스트, system path
++ pwd 조회는 system_user_lookup 안.
+"""
+
+from __future__ import annotations
+
+import pwd
+from pathlib import Path
+
+LOGIN_UID_UNSET = 4294967295  # UINT32_MAX, "loginuid 미설정" 의 sentinel.
+
+
+def _parse_loginuid(data: str) -> int | None:
+    """loginuid 파일 내용 → uid 정수 or None.
+
+    None 분기: 빈 문자열, 비정수, UNSET sentinel.
+    """
+    s = data.strip()
+    if not s:
+        return None
+    try:
+        uid = int(s)
+    except ValueError:
+        return None
+    if uid == LOGIN_UID_UNSET:
+        return None
+    return uid
+
+
+def system_user_lookup(pid: int, proc_root: str | Path = "/proc") -> str | None:
+    """실제 /proc 에서 PID 의 사용자명을 해석. 실패는 모두 None 폴백.
+
+    None 분기:
+    - /proc/<pid>/loginuid 가 없음 (PID 사라짐)
+    - 파일 내용이 비정수 또는 UNSET
+    - pwd.getpwuid 가 UID 를 못 찾음 (UID 만 있고 시스템에 user 없음)
+    """
+    path = Path(proc_root) / str(pid) / "loginuid"
+    try:
+        data = path.read_text()
+    except OSError:
+        return None
+    uid = _parse_loginuid(data)
+    if uid is None:
+        return None
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return None
