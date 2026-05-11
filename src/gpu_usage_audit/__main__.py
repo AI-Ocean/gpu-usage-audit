@@ -25,6 +25,7 @@ from .db import open_db
 from .env import detect_env_kind
 from .identity import system_user_lookup
 from .model import HostMeta
+from .nvml import NVMLNotAvailableError, NVMLTier
 from .render import (
     render_headline,
     render_heatmap,
@@ -40,7 +41,7 @@ from .report import (
     load_top_identities,
     load_waste,
 )
-from .tier import FakeTier
+from .tier import FakeTier, Tier
 
 _DURATION_RE = re.compile(r"^(?P<v>\d+(?:\.\d+)?)(?P<u>ms|s|m|h|d)$")
 _DURATION_UNITS = {
@@ -86,6 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=timedelta(seconds=30),
         help="Tick interval (e.g. 30s, 1m, 200ms) [default: 30s]",
     )
+    p_daemon.add_argument(
+        "--tier",
+        choices=("fake", "nvml"),
+        default="fake",
+        help="Telemetry source: 'fake' (deterministic stub, default) "
+        "or 'nvml' (real NVIDIA driver — requires [nvml] extra)",
+    )
     p_daemon.set_defaults(func=_cmd_daemon)
 
     p_report = sub.add_parser(
@@ -119,14 +127,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_tier(kind: str) -> Tier:
+    """--tier 선택 → Tier 인스턴스. NVML 실패 시 명확한 stderr 메시지."""
+    if kind == "fake":
+        return FakeTier()
+    if kind == "nvml":
+        return NVMLTier()
+    raise ValueError(f"unknown tier: {kind!r}")
+
+
 def _cmd_daemon(args: argparse.Namespace) -> int:
     conn = open_db(args.db)
+    tier = _make_tier(args.tier)
     try:
-        tier = FakeTier()
+        try:
+            driver = tier.probe()
+        except NVMLNotAvailableError as e:
+            print(f"gpu-usage-audit daemon: {e}", file=sys.stderr)
+            return 1
         host = HostMeta(
             hostname=socket.gethostname() or "unknown",
             env_kind=detect_env_kind("/proc"),
-            driver_version=tier.probe(),
+            driver_version=driver,
             first_seen=datetime.now(UTC),
         )
         stop = threading.Event()
@@ -143,6 +165,10 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         print(f"\n{args.db}: {total} total gpu_sample rows")
         return 0
     finally:
+        # NVMLTier 인 경우 nvmlShutdown 까지 호출하려면 close 가 필요.
+        # FakeTier 는 close 가 없어도 무방 — hasattr 로 polymorphic.
+        if hasattr(tier, "close"):
+            tier.close()
         conn.close()
 
 

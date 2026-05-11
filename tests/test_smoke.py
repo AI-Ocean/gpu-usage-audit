@@ -13,7 +13,9 @@ from datetime import timedelta
 import pytest
 
 from gpu_usage_audit import __version__
-from gpu_usage_audit.__main__ import _duration, build_parser, main
+from gpu_usage_audit.__main__ import _duration, _make_tier, build_parser, main
+from gpu_usage_audit.nvml import NVMLTier
+from gpu_usage_audit.tier import FakeTier
 
 
 def test_version_string_is_nonempty() -> None:
@@ -86,3 +88,18 @@ def test_duration_parser_invalid(bad: str) -> None:
 
     with pytest.raises(argparse.ArgumentTypeError):
         _duration(bad)
+
+
+def test_make_tier_fake() -> None:
+    assert isinstance(_make_tier("fake"), FakeTier)
+
+
+def test_make_tier_nvml_constructs_without_probe() -> None:
+    # NVMLTier() 생성 자체는 NVML 호출 없음 — Probe 시점에야 에러 가능.
+    # 이 분리가 CLI 가 stderr 로 친화 메시지를 낼 수 있게 해줌.
+    assert isinstance(_make_tier("nvml"), NVMLTier)
+
+
+def test_make_tier_unknown_raises() -> None:
+    with pytest.raises(ValueError, match="unknown tier"):
+        _make_tier("xxx")
