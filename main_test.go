@@ -448,3 +448,196 @@ func TestLoadTopIdentities(t *testing.T) {
 		t.Errorf("alice = %+v, want gpu-hours≈0.00556 idle-held=0", a)
 	}
 }
+
+// ── LoadHeatmap ──────────────────────────────────────────────────
+//
+// 시간 분해를 의미 있게 검증하려면 *다른 (dow, hour) 셀* 에 데이터를
+// 적재해야 한다. 위 writeFixture 는 40초라 한 셀에만 모이는 문제.
+//
+// 별도 시나리오:
+//   2026-05-11 00:00:xx (월요일 UTC 자정대)  — 2 tick × 2 GPU = 4 sample
+//     매 tick: GPU-0 util=80(active), GPU-1 util=2(idle) → active 2/4
+//   2026-05-12 01:00:00 (화요일 새벽 1시대) — 1 tick × 2 GPU = 2 sample
+//     active 1/2
+//
+// SQLite strftime('%w') 는 일=0..토=6 으로 Go time.Weekday() 와 동일
+// 규약. 그래서 expected dow 는 time.Weekday() 로 계산해 두면 어떤
+// 달력 변화에도 견디는 테스트가 된다 (날짜 자체를 바꾸지 않는 한).
+func TestLoadHeatmap(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	host := HostMeta{
+		Hostname:  "heatmap-host",
+		EnvKind:   "bare",
+		FirstSeen: time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC),
+	}
+	monMidnight := host.FirstSeen
+	tueOneAM := time.Date(2026, 5, 12, 1, 0, 0, 0, time.UTC)
+
+	// 셀 1: 월요일 자정대 — 2 tick, 1초 차이지만 같은 (dow=1, hour=0).
+	for i := 0; i < 2; i++ {
+		ts := monMidnight.Add(time.Duration(i) * time.Second)
+		snap := Snapshot{GPUs: []GPUSample{
+			{UUID: "GPU-0", UtilPct: 80},
+			{UUID: "GPU-1", UtilPct: 2},
+		}}
+		if err := WriteSnapshot(ctx, db, ts, host, snap); err != nil {
+			t.Fatalf("WriteSnapshot mon @%d: %v", i, err)
+		}
+	}
+
+	// 셀 2: 화요일 1시대 — 1 tick.
+	if err := WriteSnapshot(ctx, db, tueOneAM, host, Snapshot{GPUs: []GPUSample{
+		{UUID: "GPU-0", UtilPct: 80},
+		{UUID: "GPU-1", UtilPct: 2},
+	}}); err != nil {
+		t.Fatalf("WriteSnapshot tue: %v", err)
+	}
+
+	cells, err := LoadHeatmap(ctx, db, monMidnight)
+	if err != nil {
+		t.Fatalf("LoadHeatmap: %v", err)
+	}
+	if len(cells) != 2 {
+		t.Fatalf("len(cells) = %d, want 2 (mon-0h, tue-1h)", len(cells))
+	}
+
+	wantMon := HeatmapCell{Dow: int(monMidnight.Weekday()), Hour: 0, Active: 0.5, Samples: 4}
+	wantTue := HeatmapCell{Dow: int(tueOneAM.Weekday()), Hour: 1, Active: 0.5, Samples: 2}
+
+	// ORDER BY dow, hour → mon 먼저 (Weekday 값이 작음).
+	if cells[0].Dow != wantMon.Dow || cells[0].Hour != wantMon.Hour ||
+		!approxEq(cells[0].Active, wantMon.Active) || cells[0].Samples != wantMon.Samples {
+		t.Errorf("cells[0] = %+v, want %+v", cells[0], wantMon)
+	}
+	if cells[1].Dow != wantTue.Dow || cells[1].Hour != wantTue.Hour ||
+		!approxEq(cells[1].Active, wantTue.Active) || cells[1].Samples != wantTue.Samples {
+		t.Errorf("cells[1] = %+v, want %+v", cells[1], wantTue)
+	}
+}
+
+func TestLoadHeatmap_emptyDB(t *testing.T) {
+	db := openTestDB(t)
+	cells, err := LoadHeatmap(context.Background(), db, time.Now())
+	if err != nil {
+		t.Fatalf("LoadHeatmap on empty DB: %v", err)
+	}
+	if len(cells) != 0 {
+		t.Errorf("len(cells) = %d, want 0", len(cells))
+	}
+}
+
+// ── FakeTier 5틱 phase 사이클 ─────────────────────────────────────
+//
+// FakeTier 가 데몬 데모와 §1 fraction 의 의미를 살리는 *결정적* 시퀀스를
+// 만든다는 게 학습의 핵심. 5틱 주기 + 사이클 반복을 한 번에 검증.
+//
+// GPU-0 (압축 워크로드):
+//   tick 0..1 → util=80, mem=70000  (active)
+//   tick 2..3 → util=2,  mem=70000  (idle-held)
+//   tick 4    → util=0,  mem=0       (truly-idle, proc 없음)
+//   tick 5+   → 다시 0번 패턴 반복
+//
+// GPU-1, GPU-2 는 매 틱 같음 — 1 틱만 검증해도 충분.
+func TestFakeTier_phaseCycle(t *testing.T) {
+	f := &FakeTier{}
+	ctx := context.Background()
+
+	type want struct {
+		util int
+		mem  int // GPU-0 의 proc 메모리 합. 0 이면 proc 없음.
+	}
+	expect := []want{
+		{80, 70000}, // tick 0
+		{80, 70000}, // tick 1
+		{2, 70000},  // tick 2
+		{2, 70000},  // tick 3
+		{0, 0},      // tick 4 — proc 없음
+		{80, 70000}, // tick 5 — 사이클 반복
+		{80, 70000}, // tick 6
+	}
+
+	for i, w := range expect {
+		snap, err := f.Collect(ctx, time.Time{})
+		if err != nil {
+			t.Fatalf("tick %d Collect: %v", i, err)
+		}
+
+		// GPU-0 util
+		var gpu0Util int = -1
+		for _, g := range snap.GPUs {
+			if g.UUID == "GPU-0" {
+				gpu0Util = g.UtilPct
+				break
+			}
+		}
+		if gpu0Util != w.util {
+			t.Errorf("tick %d: GPU-0 util = %d, want %d", i, gpu0Util, w.util)
+		}
+
+		// GPU-0 메모리 = 해당 카드의 proc 메모리 합
+		gpu0Mem := 0
+		for _, p := range snap.Procs {
+			if p.GPUUUID == "GPU-0" {
+				gpu0Mem += p.MemUsedMB
+			}
+		}
+		if gpu0Mem != w.mem {
+			t.Errorf("tick %d: GPU-0 mem = %d, want %d", i, gpu0Mem, w.mem)
+		}
+
+		// GPU-1, GPU-2 불변량
+		var sawGPU1, sawGPU2 bool
+		for _, g := range snap.GPUs {
+			switch g.UUID {
+			case "GPU-1":
+				sawGPU1 = true
+				if g.UtilPct != 2 {
+					t.Errorf("tick %d: GPU-1 util = %d, want 2 (항상 idle)", i, g.UtilPct)
+				}
+			case "GPU-2":
+				sawGPU2 = true
+				if g.UtilPct != 0 {
+					t.Errorf("tick %d: GPU-2 util = %d, want 0 (항상 truly-idle)", i, g.UtilPct)
+				}
+			}
+		}
+		if !sawGPU1 || !sawGPU2 {
+			t.Errorf("tick %d: GPU-1 or GPU-2 누락 (sawGPU1=%v sawGPU2=%v)", i, sawGPU1, sawGPU2)
+		}
+	}
+}
+
+// 결정성: 두 FakeTier 인스턴스가 같은 호출 시퀀스에 같은 결과를 낸다.
+// 위 phase 테스트가 통과한다는 사실 자체가 단일 인스턴스 결정성을
+// 증명하지만, *상태가 인스턴스에 격리*된다는 보장은 별도. 두 개를
+// 같이 굴려 서로 간섭 안 함도 같이 확인.
+func TestFakeTier_determinism(t *testing.T) {
+	a, b := &FakeTier{}, &FakeTier{}
+	ctx := context.Background()
+	for i := 0; i < 12; i++ {
+		sa, err := a.Collect(ctx, time.Time{})
+		if err != nil {
+			t.Fatalf("a tick %d: %v", i, err)
+		}
+		sb, err := b.Collect(ctx, time.Time{})
+		if err != nil {
+			t.Fatalf("b tick %d: %v", i, err)
+		}
+		if len(sa.GPUs) != len(sb.GPUs) || len(sa.Procs) != len(sb.Procs) {
+			t.Fatalf("tick %d: 길이 불일치 a=%d/%d b=%d/%d",
+				i, len(sa.GPUs), len(sa.Procs), len(sb.GPUs), len(sb.Procs))
+		}
+		for j := range sa.GPUs {
+			if sa.GPUs[j] != sb.GPUs[j] {
+				t.Errorf("tick %d GPUs[%d]: a=%+v b=%+v", i, j, sa.GPUs[j], sb.GPUs[j])
+			}
+		}
+		for j := range sa.Procs {
+			pa, pb := sa.Procs[j], sb.Procs[j]
+			if pa.GPUUUID != pb.GPUUUID || pa.PID != pb.PID || pa.MemUsedMB != pb.MemUsedMB {
+				t.Errorf("tick %d Procs[%d]: a=%+v b=%+v", i, j, pa, pb)
+			}
+		}
+	}
+}

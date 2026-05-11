@@ -3,6 +3,9 @@
 
 # 빌드 산출물
 /dist/
+# `go build` 가 root 에 떨어뜨리는 모듈명 바이너리.
+# leading slash 로 root 만 — go-source 트리 안 같은 이름은 안 막음.
+/gpu-usage-audit
 
 # 로컬 데이터베이스
 *.db
