@@ -73,7 +73,7 @@ Or build locally:
 ```sh
 git clone https://github.com/AI-Ocean/gpu-usage-audit
 cd gpu-usage-audit
-make build       # → ./dist/v2 (~9 MB, single static binary)
+make build       # → ./dist/gpu-usage-audit (~9 MB, single static binary)
 ```
 
 The binary has zero external dependencies — `modernc.org/sqlite` is
@@ -83,16 +83,17 @@ a CGo-free SQLite, so no `libsqlite3` shared library required.
 
 ```sh
 # 1) Start the daemon. Ctrl+C to stop.
-./dist/v2 daemon --db /tmp/gua.db --interval 30s
+./dist/gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 
 # 2) After at least one tick, run the report from another shell:
-./dist/v2 report --db /tmp/gua.db --since 1h
+./dist/gpu-usage-audit report --db /tmp/gua.db --since 1h
 ```
 
 Make targets:
 
 ```sh
-make build                 # produce ./dist/v2
+make build                 # produce ./dist/gpu-usage-audit
+make test                  # run unit tests
 INTERVAL=200ms make run    # short-interval demo
 make clean
 ```

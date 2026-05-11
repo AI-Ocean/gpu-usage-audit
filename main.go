@@ -457,34 +457,34 @@ func Summarize(snap Snapshot) []CardSummary {
 // context.Canceled 는 *정상 종료* (시그널 받음) 로 nil 반환. 그 외 ctx
 // 에러 (DeadlineExceeded 등) 는 그대로 반환해서 호출자가 알게.
 func runDaemon(ctx context.Context, tier Tier, lookup UserLookupFunc, db *sql.DB, host HostMeta, interval time.Duration) error {
-	log.Printf("데몬 시작 (host=%s, env=%s, driver=%s, interval=%s)",
+	log.Printf("daemon started (host=%s, env=%s, driver=%s, interval=%s)",
 		host.Hostname, host.EnvKind, host.DriverVersion, interval)
 	next := time.Now()
 	tickN := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			if errors.Is(err, context.Canceled) {
-				log.Printf("종료 시그널 받음, 데몬 정상 종료 (총 %d 틱)", tickN)
+				log.Printf("shutdown signal received, daemon stopping cleanly (%d ticks)", tickN)
 				return nil
 			}
 			return err
 		}
 
 		if err := tick(ctx, tier, lookup, db, host, tickN); err != nil {
-			log.Printf("tick %d 실패; 계속: %v", tickN, err)
+			log.Printf("tick %d failed; continuing: %v", tickN, err)
 		}
 		tickN++
 
 		next = next.Add(interval)
 		now := time.Now()
 		if now.After(next) {
-			log.Printf("틱이 스케줄을 %s 만큼 넘어섬; 따라잡기 없이 점프", now.Sub(next))
+			log.Printf("tick overran schedule by %s; jumping without catch-up", now.Sub(next))
 			next = now
 		}
 
 		if err := sleepUntil(ctx, next); err != nil {
 			if errors.Is(err, context.Canceled) {
-				log.Printf("sleep 도중 종료 시그널 받음 (총 %d 틱)", tickN)
+				log.Printf("shutdown signal received during sleep (%d ticks)", tickN)
 				return nil
 			}
 			return err
@@ -638,17 +638,17 @@ const (
 // 않게.
 func renderHeadline(w io.Writer, host HostRow, h Headline, since time.Duration, width int) {
 	if host.Hostname == "" {
-		fmt.Fprintf(w, "gpu-usage-audit-v2  (host row 없음 — 데몬이 아직 안 돌았나?)  Window: %s\n\n", since)
+		fmt.Fprintf(w, "gpu-usage-audit  (no host row — daemon hasn't run yet?)  Window: %s\n\n", since)
 	} else {
 		ctx := host.EnvKind
 		if host.DriverVersion != "" {
 			ctx = fmt.Sprintf("%s, driver %s", host.EnvKind, host.DriverVersion)
 		}
-		fmt.Fprintf(w, "gpu-usage-audit-v2 — %s (%s)  Window: %s\n\n", host.Hostname, ctx, since)
+		fmt.Fprintf(w, "gpu-usage-audit — %s (%s)  Window: %s\n\n", host.Hostname, ctx, since)
 	}
 	fmt.Fprintln(w, "§1 Headline")
 	if h.Samples == 0 {
-		fmt.Fprintln(w, "  (윈도우 안에 샘플 없음)")
+		fmt.Fprintln(w, "  (no samples in window)")
 		return
 	}
 	wA := int(h.Active*float64(width) + 0.5)
@@ -709,10 +709,10 @@ func renderWaste(w io.Writer, waste Waste) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "§2 Waste")
 	if waste.Samples == 0 {
-		fmt.Fprintln(w, "  (윈도우 안에 샘플 없음)")
+		fmt.Fprintln(w, "  (no samples in window)")
 		return
 	}
-	fmt.Fprintf(w, "  ~%.2f GPU-hours idle, 동등 미사용 %.2f GPUs\n",
+	fmt.Fprintf(w, "  ~%.2f GPU-hours idle, ~%.2f GPUs equivalently unused\n",
 		waste.IdleGPUHours, waste.EquivUnused)
 }
 
@@ -772,7 +772,7 @@ func renderPerGPU(w io.Writer, rows []PerGPU) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "§3 Per-GPU")
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "  (윈도우 안에 카드 없음)")
+		fmt.Fprintln(w, "  (no GPU cards in window)")
 		return
 	}
 	for _, r := range rows {
@@ -833,7 +833,7 @@ func renderTopIdentities(w io.Writer, rows []TopIdentity) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "§4 Top identities")
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "  (윈도우 안에 프로세스 없음)")
+		fmt.Fprintln(w, "  (no processes in window)")
 		return
 	}
 	fmt.Fprintf(w, "  %-20s %10s  %10s\n", "identity", "gpu-hours", "idle-held")
@@ -895,7 +895,7 @@ func renderHeatmap(w io.Writer, cells []HeatmapCell) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "§5 Time-of-day heatmap (UTC)")
 	if len(cells) == 0 {
-		fmt.Fprintln(w, "  (윈도우 안에 샘플 없음)")
+		fmt.Fprintln(w, "  (no samples in window)")
 		return
 	}
 
@@ -949,15 +949,28 @@ func userOrUnknown(name *string) string {
 	return *name
 }
 
-const usage = `Usage: v2 <command> [flags]
-  daemon    한 틱씩 SQLite 에 적재하는 데몬
-  report    누적된 DB 에서 §1~§5 리포트 출력
-  --version 버전 출력
+const usage = `Usage: gpu-usage-audit <command> [flags]
+
+Commands:
+  daemon    Sample GPU/process telemetry into SQLite at a fixed interval
+  report    Print §1–§5 retrospective report from an accumulated database
+  help      Show this message
+  version   Print version
+
+Flags:
+  --help, -h     Show this message
+  --version      Print version
+
+Use "gpu-usage-audit <command> -h" for command-specific flags.
 `
 
 // main 은 첫 인자를 보고 daemon/report 로 분기하는 *디스패처*.
 // 기존 단일 모드에서 두 서브커맨드로 분리 — daemon 은 쓰기, report 는 읽기.
 // 같은 바이너리이지만 lifetime 과 ctx 정책이 완전히 다른 두 모드.
+//
+// help/version 은 *명령 형태* 와 *플래그 형태* 모두 받는다 — `kubectl
+// version` 처럼 동작하길 기대하는 사용자와 `--version` 만 기대하는
+// 사용자가 모두 자연스럽게 닿게.
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
@@ -968,12 +981,12 @@ func main() {
 		os.Exit(runDaemonCmd(os.Args[2:]))
 	case "report":
 		os.Exit(runReportCmd(os.Args[2:]))
-	case "--version", "-version":
+	case "version", "--version", "-version":
 		fmt.Println(version)
-	case "--help", "-help", "-h":
+	case "help", "--help", "-help", "-h":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "v2: 알 수 없는 명령 %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "gpu-usage-audit: unknown command %q\n\n", os.Args[1])
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
@@ -982,12 +995,12 @@ func main() {
 // runDaemonCmd 는 G 에서 만든 데몬 루프를 서브커맨드로 감싼 것.
 // 종료 코드 0 (정상), 1 (런타임 실패), 2 (사용법 오류).
 func runDaemonCmd(args []string) int {
-	fs := flag.NewFlagSet("v2 daemon", flag.ExitOnError)
-	dbPath := fs.String("db", "", "SQLite 데이터베이스 경로 (필수)")
-	interval := fs.Duration("interval", 30*time.Second, "tick 간격 (예: 30s, 1m, 200ms)")
+	fs := flag.NewFlagSet("gpu-usage-audit daemon", flag.ExitOnError)
+	dbPath := fs.String("db", "", "Path to SQLite database file (required)")
+	interval := fs.Duration("interval", 30*time.Second, "Tick interval (e.g. 30s, 1m, 200ms)")
 	_ = fs.Parse(args)
 	if *dbPath == "" {
-		fmt.Fprintln(os.Stderr, "v2 daemon: --db 가 필요합니다")
+		fmt.Fprintln(os.Stderr, "gpu-usage-audit daemon: -db is required")
 		return 2
 	}
 
@@ -1011,7 +1024,7 @@ func runDaemonCmd(args []string) int {
 	// 데몬 lifetime 동안 변하지 않는 값들이므로 한 번만 결정해 들고 다닌다.
 	driverVersion, err := tier.Probe(ctx)
 	if err != nil {
-		log.Printf("Probe 실패: %v (driver_version 빈 채로 진행)", err)
+		log.Printf("Probe failed: %v (continuing with empty driver_version)", err)
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -1032,7 +1045,7 @@ func runDaemonCmd(args []string) int {
 	var total int
 	if err := db.QueryRowContext(context.Background(),
 		"SELECT COUNT(*) FROM gpu_sample").Scan(&total); err == nil {
-		fmt.Printf("\n%s 누적 gpu_sample 행 수: %d\n", *dbPath, total)
+		fmt.Printf("\n%s: %d total gpu_sample rows\n", *dbPath, total)
 	}
 	return 0
 }
@@ -1041,14 +1054,14 @@ func runDaemonCmd(args []string) int {
 // 데몬과 *동시에* 돌 수 있도록 OpenDB 가 journal_mode=WAL 을 잡고
 // busy_timeout 으로 짧은 락 충돌을 흡수한다.
 func runReportCmd(args []string) int {
-	fs := flag.NewFlagSet("v2 report", flag.ExitOnError)
-	dbPath := fs.String("db", "", "SQLite 데이터베이스 경로 (필수)")
-	since := fs.Duration("since", time.Hour, "리포트 윈도우 (예: 1h, 24h, 5m)")
-	interval := fs.Duration("interval", 30*time.Second, "데몬이 돌았던 interval — Waste/§4 의 시간 환산에 필요")
-	width := fs.Int("width", 60, "headline 막대 너비")
+	fs := flag.NewFlagSet("gpu-usage-audit report", flag.ExitOnError)
+	dbPath := fs.String("db", "", "Path to SQLite database file (required)")
+	since := fs.Duration("since", time.Hour, "Report window (e.g. 1h, 24h, 5m)")
+	interval := fs.Duration("interval", 30*time.Second, "Daemon tick interval — needed for §2 Waste / §4 time conversion")
+	width := fs.Int("width", 60, "Width of the headline bar")
 	_ = fs.Parse(args)
 	if *dbPath == "" {
-		fmt.Fprintln(os.Stderr, "v2 report: --db 가 필요합니다")
+		fmt.Fprintln(os.Stderr, "gpu-usage-audit report: -db is required")
 		return 2
 	}
 
