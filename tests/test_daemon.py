@@ -78,20 +78,32 @@ def test_run_daemon_honors_stop_event_immediately(db: sqlite3.Connection, host: 
 
 
 def test_run_daemon_lookup_resolves_loginuid(db: sqlite3.Connection, host: HostMeta) -> None:
-    # FakeTier 가 GPU-0 의 pid 1234 / GPU-1 의 5678, 9999 를 만듦.
-    table = {1234: "alice", 5678: "bob"}  # 9999 는 의도적으로 누락
+    # FakeTier 가 PID 1234→alice, 5678→bob 을 *미리* 박아둠. 데몬은 None 인
+    # 항목만 lookup 으로 채우는 동선이라, 미리 박힌 두 항목은 *lookup 호출
+    # 자체를 안 거침*. PID 9999 만 lookup 으로 들어가는데 table 에 없어 NULL.
+    lookup_calls: list[int] = []
+
+    def tracking_lookup(pid: int) -> str | None:
+        lookup_calls.append(pid)
+        return {9999: "carol"}.get(pid)  # 9999 는 lookup 에서 채움.
+
     n = run_daemon(
         tier=FakeTier(),
         db=db,
         host=host,
         interval=INTERVAL,
-        lookup=table.get,
+        lookup=tracking_lookup,
         max_ticks=1,
         out=io.StringIO(),
     )
     assert n == 1
 
     rows = dict(db.execute("SELECT pid, loginuid_user FROM proc_sample").fetchall())
-    assert rows.get(1234) == "alice"
-    assert rows.get(5678) == "bob"
-    assert rows.get(9999) is None  # 미해결 → NULL
+    assert rows.get(1234) == "alice"  # FakeTier 가 박은 값.
+    assert rows.get(5678) == "bob"  # FakeTier 가 박은 값.
+    assert rows.get(9999) == "carol"  # lookup 으로 채움.
+
+    # 미리 박힌 PID 에는 lookup 호출이 가지 않아야 — 부조화 방지의 핵심.
+    assert 1234 not in lookup_calls
+    assert 5678 not in lookup_calls
+    assert 9999 in lookup_calls

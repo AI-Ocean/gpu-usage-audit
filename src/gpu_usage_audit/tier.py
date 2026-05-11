@@ -45,6 +45,11 @@ class FakeTier:
 
     같은 호출 시퀀스에 같은 결과 — `_tick` 이 인스턴스 내부 상태이므로
     두 인스턴스가 *독립적으로* 진행된다.
+
+    식별자 정책: FakeTier 가 loginuid_user 를 *미리* 박는다. 데몬이
+    None 만 system_user_lookup 으로 해석하므로, 미리 박힌 항목은
+    /proc 을 건드리지 않음. 이로써 가짜 PID 가 우연히 *실 시스템* 의
+    PID 와 매칭돼 호스트 사용자명을 끌어들이는 부조화를 차단.
     """
 
     def __init__(self) -> None:
@@ -67,13 +72,32 @@ class FakeTier:
             gpu0_util, gpu0_mem = 0, 0
 
         # 메모리 0 이면 그 프로세스는 카드 위에 없는 것 — NVML 도 그렇게 본다.
+        # loginuid_user 미리 박음: alice(학습), bob(Jupyter), None(unknown 시연용).
         procs: list[ProcSample] = []
         if gpu0_mem > 0:
-            procs.append(ProcSample(gpu_uuid="GPU-0", pid=1234, mem_used_mb=gpu0_mem))
+            procs.append(
+                ProcSample(
+                    gpu_uuid="GPU-0",
+                    pid=1234,
+                    mem_used_mb=gpu0_mem,
+                    loginuid_user="alice",
+                )
+            )
         procs.extend(
             [
-                ProcSample(gpu_uuid="GPU-1", pid=5678, mem_used_mb=8000),
-                ProcSample(gpu_uuid="GPU-1", pid=9999, mem_used_mb=200),
+                ProcSample(
+                    gpu_uuid="GPU-1",
+                    pid=5678,
+                    mem_used_mb=8000,
+                    loginuid_user="bob",
+                ),
+                # PID 9999 는 의도적으로 미해결 — §4 의 "unknown" 분류 시연.
+                ProcSample(
+                    gpu_uuid="GPU-1",
+                    pid=9999,
+                    mem_used_mb=200,
+                    loginuid_user=None,
+                ),
             ]
         )
 
