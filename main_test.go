@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // ── Classify ─────────────────────────────────────────────────────
@@ -199,5 +203,248 @@ func TestSummarize(t *testing.T) {
 				t.Errorf("알 수 없는 GPU 의 proc 이 카드 %s 에 들어갔다: %+v", c.UUID, p)
 			}
 		}
+	}
+}
+
+// ── DB 함수 테스트용 fixture ─────────────────────────────────────
+//
+// 의도: report 측 5개 함수 (LoadHost, LoadHeadline, LoadWaste,
+// LoadPerGPU, LoadTopIdentities) 가 *같은* fixture 위에서 돌게 해서
+// 분류룰 · 시간환산 · 분해축이 모두 한 시나리오로 검증되게.
+//
+// 시나리오 (40초, 10초 간격, 2 카드, 2 사용자):
+//   ts0:  GPU-0 util=80 alice 70GB ,  GPU-1 util=2 bob 70GB
+//   ts10: GPU-0 util=80 alice 70GB ,  GPU-1 util=2 bob 70GB
+//   ts20: GPU-0 util=2  (proc 없음),  GPU-1 util=2 bob 70GB
+//   ts30: GPU-0 util=2  (proc 없음),  GPU-1 util=2 bob 70GB
+//
+// → gpu_sample 8 행, proc_sample 6 행.
+// → 분류: active 2 (GPU-0 ts0,ts10), idle-held 4 (GPU-1 전체),
+//         truly-idle 2 (GPU-0 ts20,ts30, proc 없음).
+
+const fixtureInterval = 10 * time.Second
+
+// openTestDB 는 t.TempDir() 안에 실제 파일 DB 를 만든다.
+// OpenDB 와 동일 경로 (WAL + 인덱스 포함) — 운영과 같은 코드 경로 검증.
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.db")
+	db, err := OpenDB(context.Background(), path)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// writeFixture 는 위 시나리오를 적재하고 (cutoff, interval) 을 돌려준다.
+// cutoff 는 base 시각 그대로 — 모든 fixture 행이 윈도우 안에 들어옴.
+func writeFixture(t *testing.T, db *sql.DB) (base time.Time, interval time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	host := HostMeta{
+		Hostname:      "testhost",
+		EnvKind:       "bare",
+		DriverVersion: "999.99-test",
+		FirstSeen:     time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC),
+	}
+	alice := "alice"
+	bob := "bob"
+	base = host.FirstSeen
+	interval = fixtureInterval
+
+	// 각 ts 의 Snapshot 을 단일 트랜잭션으로 적재 (WriteSnapshot 의 동선).
+	tick := func(off time.Duration, snap Snapshot) {
+		if err := WriteSnapshot(ctx, db, base.Add(off), host, snap); err != nil {
+			t.Fatalf("WriteSnapshot @%s: %v", off, err)
+		}
+	}
+
+	tick(0*time.Second, Snapshot{
+		GPUs: []GPUSample{{UUID: "GPU-0", UtilPct: 80}, {UUID: "GPU-1", UtilPct: 2}},
+		Procs: []ProcSample{
+			{GPUUUID: "GPU-0", PID: 100, MemUsedMB: 70000, LoginUIDUser: &alice},
+			{GPUUUID: "GPU-1", PID: 200, MemUsedMB: 70000, LoginUIDUser: &bob},
+		},
+	})
+	tick(10*time.Second, Snapshot{
+		GPUs: []GPUSample{{UUID: "GPU-0", UtilPct: 80}, {UUID: "GPU-1", UtilPct: 2}},
+		Procs: []ProcSample{
+			{GPUUUID: "GPU-0", PID: 100, MemUsedMB: 70000, LoginUIDUser: &alice},
+			{GPUUUID: "GPU-1", PID: 200, MemUsedMB: 70000, LoginUIDUser: &bob},
+		},
+	})
+	tick(20*time.Second, Snapshot{
+		GPUs: []GPUSample{{UUID: "GPU-0", UtilPct: 2}, {UUID: "GPU-1", UtilPct: 2}},
+		Procs: []ProcSample{
+			{GPUUUID: "GPU-1", PID: 200, MemUsedMB: 70000, LoginUIDUser: &bob},
+		},
+	})
+	tick(30*time.Second, Snapshot{
+		GPUs: []GPUSample{{UUID: "GPU-0", UtilPct: 2}, {UUID: "GPU-1", UtilPct: 2}},
+		Procs: []ProcSample{
+			{GPUUUID: "GPU-1", PID: 200, MemUsedMB: 70000, LoginUIDUser: &bob},
+		},
+	})
+	return base, interval
+}
+
+// approxEq: float fraction 비교용. SQL AVG 와 우리 손계산의 부동소수점
+// 차를 흡수. 1e-9 면 충분.
+func approxEq(a, b float64) bool {
+	return math.Abs(a-b) < 1e-9
+}
+
+// ── LoadHost ─────────────────────────────────────────────────────
+//
+// 빈 DB → sql.ErrNoRows 를 swallow 하고 (빈 HostRow, nil) 반환해야 함.
+// (renderHeadline 헤더가 "host row 없음" 분기를 갖고 있어서 이 동작이
+// 헤더 표시의 단순성을 떠받친다.)
+func TestLoadHost_empty(t *testing.T) {
+	db := openTestDB(t)
+	h, err := LoadHost(context.Background(), db)
+	if err != nil {
+		t.Fatalf("LoadHost on empty DB: %v", err)
+	}
+	if h != (HostRow{}) {
+		t.Errorf("LoadHost(empty) = %+v, want zero value", h)
+	}
+}
+
+func TestLoadHost_populated(t *testing.T) {
+	db := openTestDB(t)
+	writeFixture(t, db)
+	h, err := LoadHost(context.Background(), db)
+	if err != nil {
+		t.Fatalf("LoadHost: %v", err)
+	}
+	want := HostRow{Hostname: "testhost", EnvKind: "bare", DriverVersion: "999.99-test"}
+	if h != want {
+		t.Errorf("LoadHost = %+v, want %+v", h, want)
+	}
+}
+
+// ── LoadHeadline ─────────────────────────────────────────────────
+//
+// 8 sample fixture → active 2/8, idle-held 4/8, truly-idle 2/8.
+// 빈 DB 와 미래-cutoff 의 두 가지 "0 행" 경로가 똑같이 Samples=0 으로
+// 떨어져야 (NullFloat64 가 .Float64=0 으로 흡수).
+func TestLoadHeadline(t *testing.T) {
+	db := openTestDB(t)
+	base, _ := writeFixture(t, db)
+
+	h, err := LoadHeadline(context.Background(), db, base)
+	if err != nil {
+		t.Fatalf("LoadHeadline: %v", err)
+	}
+	if h.Samples != 8 {
+		t.Errorf("Samples = %d, want 8", h.Samples)
+	}
+	if !approxEq(h.Active, 2.0/8) {
+		t.Errorf("Active = %v, want 0.25", h.Active)
+	}
+	if !approxEq(h.IdleHeld, 4.0/8) {
+		t.Errorf("IdleHeld = %v, want 0.50", h.IdleHeld)
+	}
+	if !approxEq(h.TrulyIdle, 2.0/8) {
+		t.Errorf("TrulyIdle = %v, want 0.25", h.TrulyIdle)
+	}
+}
+
+func TestLoadHeadline_emptyDB(t *testing.T) {
+	db := openTestDB(t)
+	h, err := LoadHeadline(context.Background(), db, time.Now())
+	if err != nil {
+		t.Fatalf("LoadHeadline on empty DB: %v", err)
+	}
+	if h.Samples != 0 || h.Active != 0 || h.IdleHeld != 0 || h.TrulyIdle != 0 {
+		t.Errorf("LoadHeadline(empty) = %+v, want zero Headline", h)
+	}
+}
+
+func TestLoadHeadline_cutoffPastAll(t *testing.T) {
+	db := openTestDB(t)
+	base, _ := writeFixture(t, db)
+	// 모든 행보다 *미래* 의 cutoff → 0 행.
+	h, err := LoadHeadline(context.Background(), db, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("LoadHeadline: %v", err)
+	}
+	if h.Samples != 0 {
+		t.Errorf("Samples = %d, want 0 (cutoff past all)", h.Samples)
+	}
+}
+
+// ── LoadWaste ────────────────────────────────────────────────────
+//
+// idle 틱 (util<10) 수 = 6. interval=10s.
+//   idle_gpu_hours = 6 * 10 / 3600 ≈ 0.016667
+//   equiv_unused   = 6/8 * 2 (distinct gpu)  = 1.5
+func TestLoadWaste(t *testing.T) {
+	db := openTestDB(t)
+	base, interval := writeFixture(t, db)
+	w, err := LoadWaste(context.Background(), db, base, interval)
+	if err != nil {
+		t.Fatalf("LoadWaste: %v", err)
+	}
+	if w.Samples != 8 {
+		t.Errorf("Samples = %d, want 8", w.Samples)
+	}
+	wantIdleH := 6.0 * 10.0 / 3600.0
+	if !approxEq(w.IdleGPUHours, wantIdleH) {
+		t.Errorf("IdleGPUHours = %v, want %v", w.IdleGPUHours, wantIdleH)
+	}
+	if !approxEq(w.EquivUnused, 1.5) {
+		t.Errorf("EquivUnused = %v, want 1.5", w.EquivUnused)
+	}
+}
+
+// ── LoadPerGPU ───────────────────────────────────────────────────
+//
+// GPU-0: active 2/4, idle-held 0, truly-idle 2/4.
+// GPU-1: active 0,   idle-held 4/4, truly-idle 0.
+// ORDER BY gpu_uuid 라 GPU-0 가 먼저.
+func TestLoadPerGPU(t *testing.T) {
+	db := openTestDB(t)
+	base, _ := writeFixture(t, db)
+	rows, err := LoadPerGPU(context.Background(), db, base)
+	if err != nil {
+		t.Fatalf("LoadPerGPU: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	g0, g1 := rows[0], rows[1]
+	if g0.UUID != "GPU-0" || !approxEq(g0.Active, 0.5) || !approxEq(g0.IdleHeld, 0) || !approxEq(g0.TrulyIdle, 0.5) || g0.Samples != 4 {
+		t.Errorf("GPU-0 = %+v, want active=0.5 idle-held=0 truly-idle=0.5 samples=4", g0)
+	}
+	if g1.UUID != "GPU-1" || !approxEq(g1.Active, 0) || !approxEq(g1.IdleHeld, 1.0) || !approxEq(g1.TrulyIdle, 0) || g1.Samples != 4 {
+		t.Errorf("GPU-1 = %+v, want active=0 idle-held=1.0 truly-idle=0 samples=4", g1)
+	}
+}
+
+// ── LoadTopIdentities ────────────────────────────────────────────
+//
+// bob:   4 procs, 4*10/3600 ≈ 0.01111 GPU-h, 4/4 = 100% idle-held
+//   (모두 GPU-1 util=2, mem=70000>100 → idle-held 조건 정확히 충족)
+// alice: 2 procs, 2*10/3600 ≈ 0.00556 GPU-h, 0% idle-held
+//   (모두 GPU-0 util=80 → util<10 분기 안 탐)
+// ORDER BY gpu_hours DESC → bob 먼저.
+func TestLoadTopIdentities(t *testing.T) {
+	db := openTestDB(t)
+	base, interval := writeFixture(t, db)
+	rows, err := LoadTopIdentities(context.Background(), db, base, interval)
+	if err != nil {
+		t.Fatalf("LoadTopIdentities: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	b, a := rows[0], rows[1]
+	if b.Identity != "bob" || !approxEq(b.GPUHours, 4.0*10.0/3600.0) || !approxEq(b.IdleHeld, 1.0) {
+		t.Errorf("bob = %+v, want gpu-hours≈0.01111 idle-held=1.0", b)
+	}
+	if a.Identity != "alice" || !approxEq(a.GPUHours, 2.0*10.0/3600.0) || !approxEq(a.IdleHeld, 0) {
+		t.Errorf("alice = %+v, want gpu-hours≈0.00556 idle-held=0", a)
 	}
 }
