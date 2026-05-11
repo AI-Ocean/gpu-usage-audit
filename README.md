@@ -14,10 +14,10 @@ Published by [AIOcean](https://github.com/AI-Ocean) as the awareness
 funnel for the **ocean-all** GPU resource management platform. The
 daemon itself is fully offline and never touches the network.
 
-> **Status:** v0.2.0a1 (Python alpha) — `daemon` and `report` work
-> end-to-end on **fake** telemetry. Real NVML lands in v0.2.0 stable.
-> The Go v0.1.0 implementation remains downloadable at tag `v0.1.0`
-> / branch [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
+> **Status:** v0.2.0 — `daemon` (fake **or** real NVIDIA NVML) and
+> `report` work end-to-end. The Go v0.1.0 implementation remains
+> downloadable at tag `v0.1.0` / branch
+> [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
 ## What you get (target shape — being ported from Go v0.1.0)
 
@@ -57,26 +57,46 @@ the SM utilization is below 10%.
 
 ## Install
 
-Once PyPI publish is enabled, the intended UX is:
+Until PyPI publish is enabled, install the wheel from the
+[v0.2.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.2.0):
 
 ```sh
-# Zero-install: uv resolves the right Python and runs in an isolated env
-uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+# Recommended: uvx (no global install, isolated environment)
+uvx --from https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl \
+    gpu-usage-audit version
 
-# Or install into the current environment
+# Or with pip
+pip install https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.2.0/gpu_usage_audit-0.2.0-py3-none-any.whl
+```
+
+Once PyPI publish is wired, the intended UX is:
+
+```sh
+uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 pip install gpu-usage-audit
 ```
 
-For v0.2.0a1 the alpha wheel + sdist are attached to the
-[v0.2.0a1 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.2.0a1).
-Download `gpu_usage_audit-0.2.0a1-py3-none-any.whl` and run:
+### Real NVIDIA GPU telemetry
+
+The default `--tier fake` works on any host. For real telemetry on
+NVIDIA GPU machines, install the `[nvml]` extra (depends on
+`nvidia-ml-py`):
 
 ```sh
-pip install ./gpu_usage_audit-0.2.0a1-py3-none-any.whl
-gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+# pip
+pip install 'gpu-usage-audit[nvml]'
+
+# uvx — bring nvidia-ml-py along for a one-shot run
+uvx --with nvidia-ml-py gpu-usage-audit daemon --db /tmp/gua.db --tier nvml --interval 30s
 ```
 
-If you want the Go v0.1.0 binary, see the
+Then run the report from another shell:
+
+```sh
+gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
+```
+
+If you want the Go v0.1.0 binary instead, see the
 [v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
 
 ## Development

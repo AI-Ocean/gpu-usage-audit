@@ -6,12 +6,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-### Planned for v0.2.0
-- Real NVML telemetry via `pynvml` (optional dependency, FakeTier still
-  available for development).
-- PyPI / uvx distribution once trusted publishing is set up.
-- Identity resolution sourced from the daemon's view of fake processes,
-  so `FakeTier` runs do not accidentally resolve the local user.
+### Planned
+- PyPI publish via trusted publishing (workflow already wired, awaiting
+  the publisher registration on the PyPI side).
+
+## [0.2.0] — 2026-05-11
+
+First Python stable. Real NVIDIA NVML telemetry support added — daemon
+now runs on real GPU hosts via `--tier nvml`.
+
+### Added
+- `NVMLTier` (`gpu_usage_audit.nvml`): real telemetry via `pynvml`
+  (`nvidia-ml-py`) — compute-running processes, per-card UUID +
+  utilization, bytes→MB memory conversion. Late-bound import so the
+  package works without the [nvml] extra; `--tier nvml` raises a
+  friendly install hint if the extra is missing.
+- `daemon --tier {fake,nvml}` flag (default `fake`). The fake source
+  remains usable on any host for the funnel demo; the NVML source is
+  for real GPU hosts.
+- `[nvml]` optional dependency: `pip install gpu-usage-audit[nvml]` or
+  `uvx --with nvidia-ml-py gpu-usage-audit ...`.
+
+### Fixed
+- `FakeTier` now pins synthetic `loginuid_user` values (alice / bob /
+  None) so the daemon's `system_user_lookup` no longer accidentally
+  resolves a real local user when a synthetic PID happens to exist on
+  the host.
 
 ## [0.2.0a1] — 2026-05-11
 
