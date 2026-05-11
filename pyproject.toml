@@ -1,0 +1,82 @@
+[project]
+name = "gpu-usage-audit"
+version = "0.2.0a0"
+description = "Single-host daemon that surfaces 'idle-held' NVIDIA GPU memory — the embarrassing category conventional dashboards miss."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "AI-Ocean" }]
+keywords = ["gpu", "monitoring", "nvidia", "idle-detection", "sqlite"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+]
+# 런타임 의존성 0 (sqlite3 는 stdlib). v0.2.0 에서 NVML 추가 시 pynvml.
+dependencies = []
+
+[project.scripts]
+# pip / uvx 가 만들 entry point. `uvx gpu-usage-audit ...` 한 줄로 실행.
+gpu-usage-audit = "gpu_usage_audit.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/AI-Ocean/gpu-usage-audit"
+Issues = "https://github.com/AI-Ocean/gpu-usage-audit/issues"
+Changelog = "https://github.com/AI-Ocean/gpu-usage-audit/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpu_usage_audit"]
+
+# ── 개발 도구 의존성 ─────────────────────────────────────────────
+# `uv sync --group dev` 또는 `uv run pytest` 등에서 자동 사용.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "mypy>=1.10",
+    "ruff>=0.5",
+]
+
+# ── pytest ──────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+
+# ── ruff (lint + format 한 도구로) ───────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# 시작 셋트 — 너무 빡빡하지 않게. 필요에 따라 추가.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",  # line-too-long (formatter 가 처리)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ── mypy (strict, 학습 가치) ─────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]

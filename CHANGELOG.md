@@ -6,10 +6,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+- **Language switch: Go → Python.** v0.2.0 onward is a Python rewrite
+  distributed via `uv`/`pip`. The Go implementation that shipped as
+  v0.1.0 is preserved at tag `v0.1.0` and branch `go-archive`.
+
+  Rationale: the next project (ocean-all) is in Python and the target
+  user base (ML practitioners) is more comfortable with `uvx ...` /
+  `pip install ...` than downloading a static binary. uv resolves the
+  Python interpreter automatically, so the operational story (a single
+  command, no system-Python prerequisite) is preserved.
+
 ### Planned for v0.2.0
-- Real NVML tier implementation (build tag `nvml_real`) so the daemon
-  collects actual GPU telemetry on NVIDIA hosts, not only the bundled
-  fake source.
+- Port the 5-section report and daemon loop from the Go v0.1.0 design.
+- Real NVML telemetry via `pynvml` (optional dependency, fakes still
+  available for development).
+- PyPI / uvx distribution.
 
 ## [0.1.0] — 2026-05-11
 

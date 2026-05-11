@@ -14,16 +14,17 @@ Published by [AIOcean](https://github.com/AI-Ocean) as the awareness
 funnel for the **ocean-all** GPU resource management platform. The
 daemon itself is fully offline and never touches the network.
 
-> **Status:** v0.1.0 — first cut. Telemetry is *fake* by default
-> (deterministic, time-varying); the real NVML implementation lands
-> in v0.2.0. This release lets you exercise the full pipeline
-> (daemon → SQLite → report) on any Linux host without an NVIDIA
-> driver.
+> **Status:** v0.2.0a0 — Python rewrite *in progress*. The 5-section
+> report and daemon are being ported from the Go v0.1.0 design. The
+> previous Go implementation is preserved at git tag `v0.1.0` and
+> branch [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive)
+> and remains downloadable from the
+> [v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
 
-## What you get
+## What you get (target shape — being ported from Go v0.1.0)
 
 ```
-$ gua report --db /var/lib/gua/gua.db --since 1h
+$ gpu-usage-audit report --db /var/lib/gua/gua.db --since 1h
 gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1h0m0s
 
 §1 Headline
@@ -34,7 +35,7 @@ gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1h0m0s
   (51 samples)
 
 §2 Waste
-  ~0.43 GPU-hours idle, equivalent to 2.53 GPUs unused
+  ~0.43 GPU-hours idle, ~2.53 GPUs equivalently unused
 
 §3 Per-GPU
   GPU-0     active  47.1%  idle-held  35.3%  truly-idle  17.6%
@@ -48,7 +49,7 @@ gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1h0m0s
 
 §5 Time-of-day heatmap (UTC)
         0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
-  Mon               .                                  
+  Mon               .
 ```
 
 The 3-bar collapses every card × every tick over the window into
@@ -56,49 +57,35 @@ the active / idle-held / truly-idle split. **`idle-held` rows are
 the embarrassing category**: a process is holding GPU memory but
 the SM utilization is below 10%.
 
-## Install
+## Install (v0.2.0a0 — `version` only while the rewrite is in progress)
 
-> v0.1.0 ships fake telemetry only. Use it to evaluate the report
-> format, the schema, and the daemon's signal/transaction behavior.
-> Real NVML support arrives in v0.2.0.
-
-### From source
+The intended UX once daemon/report land:
 
 ```sh
-go install github.com/AI-Ocean/gpu-usage-audit/...@latest
+# Zero-install: uv resolves the right Python and runs in an isolated env
+uvx gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+
+# Or install into the current environment
+pip install gpu-usage-audit
 ```
 
-Or build locally:
+If you want the working v0.1.0 today (Go, single binary), download from
+the [v0.1.0 release](https://github.com/AI-Ocean/gpu-usage-audit/releases/tag/v0.1.0).
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/) (uv pins the Python version
+automatically; `requires-python = ">=3.12"`).
 
 ```sh
 git clone https://github.com/AI-Ocean/gpu-usage-audit
 cd gpu-usage-audit
-make build       # → ./dist/gpu-usage-audit (~9 MB, single static binary)
+uv sync                          # create .venv, install dev deps
+uv run pytest                    # run the test suite
+uv run gpu-usage-audit version   # exercise the CLI entry point
 ```
 
-The binary has zero external dependencies — `modernc.org/sqlite` is
-a CGo-free SQLite, so no `libsqlite3` shared library required.
-
-## Quick demo
-
-```sh
-# 1) Start the daemon. Ctrl+C to stop.
-./dist/gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
-
-# 2) After at least one tick, run the report from another shell:
-./dist/gpu-usage-audit report --db /tmp/gua.db --since 1h
-```
-
-Make targets:
-
-```sh
-make build                 # produce ./dist/gpu-usage-audit
-make test                  # run unit tests
-INTERVAL=200ms make run    # short-interval demo
-make clean
-```
-
-## How the classification works
+## How the classification works (carried over from v0.1.0)
 
 Each tick of the daemon records:
 
@@ -130,12 +117,6 @@ Those belong to a platform layer above the host. **That's where
 shows you that a meaningful slice of your fleet is idle-held, the
 next step is shared-pool scheduling, which is a problem this tool
 intentionally does not try to solve.
-
-## Resource budget (v0.1.0)
-
-- < 0.5% of one CPU at 30 s tick cadence
-- < 30 MB RSS
-- ~50 MB / host / 30 days at 12 GPUs
 
 ## License
 

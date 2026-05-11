@@ -1,11 +1,27 @@
 # 작업 메모/도구 (절대 commit 금지)
 /.claude/
 
+# uv / virtualenv
+.venv/
+.python-version
+
 # 빌드 산출물
-/dist/
-# `go build` 가 root 에 떨어뜨리는 모듈명 바이너리.
-# leading slash 로 root 만 — go-source 트리 안 같은 이름은 안 막음.
-/gpu-usage-audit
+dist/
+build/
+*.egg-info/
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 테스트/타입 캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
 
 # 로컬 데이터베이스
 *.db
@@ -22,8 +38,3 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# Go
-*.test
-*.out
-coverage.txt
