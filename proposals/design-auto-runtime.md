@@ -47,6 +47,41 @@ Reason:
 This is the main product shift: `daemon` remains a low-level collector, while
 `gua start` becomes the launcher/orchestrator.
 
+## Motivation and Differentiation
+
+The gap this project should own is not raw GPU telemetry alone. DCGM exporter,
+`nvidia-smi`, and many Grafana dashboards already expose utilization, memory,
+temperature, and process-level facts. Slurm accounting, Kubernetes metadata, and
+cluster dashboards already expose scheduler-side allocation and ownership.
+
+The missing view is the retrospective join between the two:
+
+```text
+Who was allocated a GPU, and did that GPU actually do useful work?
+Who used a GPU without a scheduler allocation?
+Which GPUs were memory-held but compute-idle?
+Which GPUs were allocated but had no meaningful GPU process at all?
+```
+
+That combined view is the unique value. `gpu-usage-audit` should therefore
+avoid becoming another live GPU monitor. It should be a lightweight retrospective
+audit tool that correlates actual NVML observations with scheduler context.
+
+The most important headline classes are:
+
+```text
+allocated-idle-held     # scheduler allocated it, process held memory, compute was cold
+allocated-unused        # scheduler allocated it, but NVML saw no meaningful use
+unallocated-active      # GPU was used without visible scheduler allocation
+unallocated-idle-held   # GPU memory was held without visible scheduler allocation
+```
+
+In Kubernetes, `NVIDIA_VISIBLE_DEVICES=all` without a corresponding
+`nvidia.com/gpu` request is a first-class anomaly. It means a pod can access GPUs
+that scheduler accounting may not represent. This is one of the signals that
+standard GPU telemetry and kube-state style metadata do not provide by
+themselves.
+
 ## Product Goals
 
 1. **No environment knowledge required for first use**
@@ -260,6 +295,7 @@ Doctor checks:
 - `/dev/nvidia*`
 - host NVML load/init/device count
 - GPU Operator staged NVML under `/run/nvidia/driver`
+- whether the staged NVML path should be used for host mode
 - `nvidia-smi` presence if available
 - `kubectl` availability and auth
 - k8s runtime classes
@@ -406,6 +442,14 @@ Proposed order:
    - If host NVML sees GPUs, host runtime is viable.
    - If Slurm is detected, scheduler context becomes `slurm`.
    - Otherwise scheduler context is `none`.
+   - If host NVML fails with a likely version mismatch but staged GPU Operator
+     NVML exists under `/run/nvidia/driver`, the plan should record a host
+     runtime remediation:
+     - re-exec with `LD_LIBRARY_PATH` prepended before importing pynvml, or
+     - use a tiny launcher wrapper that sets the library path before starting
+       the collector.
+     Changing `LD_LIBRARY_PATH` after pynvml/libnvidia-ml has already been
+     loaded is not sufficient.
 
 2. Kubernetes
    - If host NVML cannot see GPUs, but k8s is available and NVIDIA runtime can
@@ -460,6 +504,22 @@ Likely mounts:
 PIDs for GPU processes, but without host PID visibility the collector may not be
 able to map those PIDs back to `/proc/<pid>/cgroup`.
 
+Default should be `hostPID: true` with an opt-out mode. Some clusters enforce
+restricted Pod Security profiles, so `gua start --mode k8s --no-host-pid` should
+be possible, but the plan must say that process-to-pod attribution will be
+weaker.
+
+The DaemonSet should target GPU-capable nodes by default, not every node.
+Preferred selectors:
+
+```text
+nvidia.com/gpu.present=true
+feature.node.kubernetes.io/pci-10de.present=true
+```
+
+If GPU Feature Discovery / Node Feature Discovery labels are absent, the
+installer can fall back to a broader DaemonSet plus collector self-checks.
+
 ### Kubernetes Allocation Context
 
 The k8s adapter should combine three data sources:
@@ -483,6 +543,36 @@ all GPUs visible inside the container
 
 Those pods can use GPUs even though scheduler accounting may not represent the
 use cleanly.
+
+The adapter should explicitly detect:
+
+```text
+NVIDIA_VISIBLE_DEVICES=all
+NVIDIA_VISIBLE_DEVICES=<GPU UUID list>
+no nvidia.com/gpu request or limit
+```
+
+These should be surfaced as scheduler-accounting anomalies, not just stored as
+raw environment variables.
+
+### Cgroup Compatibility
+
+Process attribution depends on `/proc/<pid>/cgroup`, but cgroup v1 and unified
+cgroup v2 encode paths differently. Kubernetes and Slurm deployments are both
+moving toward cgroup v2.
+
+The parser should be a shared module used by the k8s and Slurm adapters. It
+should support:
+
+```text
+cgroup v1 controller-specific lines
+cgroup v2 unified `0::/path` lines
+systemd slice escaping
+containerd / CRI-O pod and container IDs
+Slurm job_<id> and step_<id> paths
+```
+
+This should be decided before implementing process-to-owner attribution.
 
 ### Kubernetes Report Semantics
 
@@ -590,6 +680,9 @@ ts
 node_id
 gpu_uuid
 gpu_index
+parent_uuid          # nullable, set for MIG instances or virtual slices
+mig_profile          # nullable, e.g. 1g.5gb
+share_id             # nullable, for MIG/vGPU/time-slicing/MPS-style slices
 bus_id
 util_pct
 mem_used_mb
@@ -616,6 +709,7 @@ ts
 node_id
 scheduler_kind     # k8s / slurm
 gpu_uuid           # nullable if exact GPU unknown
+parent_uuid        # nullable, physical GPU for MIG/vGPU/shared allocations
 owner_kind         # k8s_pod / slurm_job
 owner_key          # stable ID: namespace/name or job ID
 owner_name
@@ -623,6 +717,7 @@ namespace
 user_name
 account
 requested_gpus
+share_fraction     # nullable, for fractional/shared GPU allocation
 allocation_state   # allocated / released / unknown
 raw_ref
 ```
@@ -652,6 +747,36 @@ allocation state = unknown
 ```
 
 Reports should continue to work on old DBs.
+
+### Retention and Rollups
+
+Raw process samples can become large quickly. A busy node can produce many rows
+per tick:
+
+```text
+1 Hz * 10 GPUs * 50 GPU processes = 500 process rows/sec
+```
+
+SQLite can handle useful short-term windows, but long retention needs an
+explicit policy. Default storage should keep the operational model simple:
+
+```text
+raw samples:       7-14 days by default
+1-minute rollups:  90 days by default
+5-minute rollups:  optional long-term retention
+```
+
+Proposed rollup tables:
+
+```text
+gpu_rollup_1m
+owner_rollup_1m
+allocation_rollup_1m
+```
+
+Rollups should preserve the combined classes, not just average utilization.
+Otherwise the core signal, such as `allocated-unused`, disappears during
+downsampling.
 
 ## Classification Model
 
@@ -713,10 +838,20 @@ MVP:
 - `gua report` runs `gua daemon export --format jsonl` inside each collector
   pod and aggregates locally.
 
-This avoids a central database or service.
+This avoids a central database or service, but it has known limits:
+
+- `pods/exec` RBAC is often restricted.
+- Sequential exec across many nodes is slow.
+- Large exports need streaming, compression, and time-window filtering.
+
+The report implementation should fan out in parallel and request only the
+needed time window. It should also support an alternative export path.
 
 Later:
 
+- Optional read-only HTTP export endpoint in each collector pod.
+- Optional `kubectl port-forward` based report collection.
+- Optional cluster-internal aggregator Job.
 - Optional central PVC.
 - Optional Prometheus/exporter mode.
 - Optional object storage export.
@@ -804,11 +939,21 @@ Needs:
 
 - Ability to create namespace, service account, configmap, daemonset, and RBAC.
 - Runtime access to all GPUs on the target node.
-- Read access to pod metadata.
+- Read access to pod and node metadata.
 - Potential hostPID and read-only `/proc` access for process attribution.
 - hostPath write access for SQLite DB.
+- Optional `pods/exec` for `gua report` if using exec-based export.
 
 The install plan must print these privileges before applying resources.
+
+Minimum collector RBAC should start with:
+
+```text
+get/list/watch pods
+get/list/watch nodes
+```
+
+`pods/exec` should be report-side only, not required by the collector itself.
 
 ### Slurm Mode
 
@@ -822,6 +967,16 @@ Needs:
 Slurm job users should not be expected to install node-wide collectors.
 
 ## Implementation Milestones
+
+### M0: Focused ADRs
+
+Before broad implementation, write short architecture decision records for the
+highest-risk details:
+
+- GPU Operator staged NVML loading and host-mode re-exec.
+- MIG, vGPU, MPS, and time-slicing representation.
+- cgroup v1/v2 parser and owner attribution.
+- k8s report export path: `pods/exec` versus HTTP endpoint versus aggregator.
 
 ### M1: Doctor and RuntimePlan
 
@@ -839,7 +994,21 @@ Deliver:
 This is the highest leverage milestone because it validates environment
 assumptions without installing anything.
 
-### M2: CLI Surface and State
+### M2: Schema V2 and Combined Report Model
+
+Deliver:
+
+- migration-safe DB schema
+- allocation table
+- combined classes
+- fake scheduler tests
+- old DB compatibility
+- retention and rollup policy
+
+This is the differentiating feature. It should land early so every runtime
+adapter can target the same model.
+
+### M3: CLI Surface and State
 
 Deliver:
 
@@ -850,16 +1019,6 @@ Deliver:
 
 No k8s install yet.
 
-### M3: Schema V2 and Combined Report Model
-
-Deliver:
-
-- migration-safe DB schema
-- allocation table
-- combined classes
-- fake scheduler tests
-- old DB compatibility
-
 ### M4: Kubernetes Runtime Adapter
 
 Deliver:
@@ -868,7 +1027,7 @@ Deliver:
 - embedded DaemonSet manifest
 - `gua start --mode k8s`
 - `gua stop --mode k8s`
-- `gua report` from collector pods
+- `gua report` from collector pods with parallel, windowed export
 
 This solves the observed GPU Operator environment.
 
@@ -880,6 +1039,7 @@ Deliver:
 - PodResources API integration where available
 - report by namespace/pod/user
 - detection of `NVIDIA_VISIBLE_DEVICES=all` pods without GPU requests
+- anomaly headline for unrequested GPU access
 
 ### M6: Host Runtime Adapter
 
@@ -897,6 +1057,7 @@ Deliver:
 - Slurm detection
 - job allocation snapshots
 - process-to-job mapping through cgroups
+- exact GPU-to-job mapping on a best-effort basis
 - report by job/user/account
 
 ### M8: Documentation and Release Polish
@@ -932,16 +1093,29 @@ separate abstractions.
 
 ## Open Questions
 
-1. Should `nvidia-ml-py` become a default dependency?
-2. Should the k8s DaemonSet use `hostPID: true` by default?
-3. Should k8s install default to all nodes or only detected GPU nodes?
-4. What is the minimum RBAC for useful k8s attribution?
-5. Should `gua report` default to one node or all nodes in k8s mode?
-6. How much Slurm support is needed in the first release: detection only,
-   allocation counts, or exact GPU-to-job mapping?
-7. How should MIG be represented in the schema?
-8. Should the project keep `gpu-usage-audit` as the command and add `gua`, or
-   switch docs to `gua` as the primary command immediately?
+Proposed decisions:
+
+1. `nvidia-ml-py` should become a default dependency.
+2. k8s DaemonSet should default to `hostPID: true`, with `--no-host-pid` opt-out.
+3. k8s install should target GPU-capable nodes by default.
+4. Collector RBAC should be read-only: pods and nodes. `pods/exec` is only
+   needed for the exec-based report transport.
+5. `gua report` should default to the current node when local state is
+   node-scoped, and support `--all-nodes` for cluster reports.
+6. Slurm MVP should include detection, node-level job allocation, and cgroup
+   PID-to-job mapping. Exact GPU-to-job mapping is best effort.
+7. MIG fields should be in schema v2 even if reports initially treat them as
+   ordinary GPU-like devices.
+8. `gua` should become the primary command. `gpu-usage-audit` should remain as
+   a compatibility alias.
+
+Still open:
+
+1. Should the first k8s report transport be `pods/exec`, HTTP export, or both?
+2. What default raw retention window is acceptable for busy nodes?
+3. Should rollups be computed in the collector process or during report/export?
+4. How should fractional sharing from HAMi/vGPU/time-slicing be normalized
+   across schedulers?
 
 ## References
 
@@ -949,9 +1123,23 @@ separate abstractions.
   https://docs.nvidia.com/datacenter/dcgm/latest/gpu-telemetry/dcgm-exporter.html
 - NVIDIA Container Toolkit GPU environment variables:
   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/1.18.1/docker-specialized.html
+- NVIDIA GPU Operator overview:
+  https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/index.html
+- NVIDIA GPU Operator CDI and GPU Management Containers:
+  https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/cdi.html
+- Kubernetes Device Plugins:
+  https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/
+- Kubernetes kubelet files and Pod Resources API path:
+  https://kubernetes.io/docs/reference/node/kubelet-files/
 - Slurm GRES GPU scheduling:
   https://slurm.schedmd.com/gres.html
 - Slurm `gres.conf`:
   https://slurm.schedmd.com/gres.conf.html
 - Slurm cgroups:
   https://slurm.schedmd.com/cgroups.html
+- Jeon et al., "Analysis of Large-Scale Multi-Tenant GPU Clusters for DNN
+  Training Workloads", USENIX ATC 2019:
+  https://www.usenix.org/conference/atc19/presentation/jeon
+- Hu et al., "Lucid: A Non-intrusive, Scalable and Interpretable Scheduler for
+  Deep Learning Training Jobs", ASPLOS 2023:
+  https://doi.org/10.1145/3575693.3575705
