@@ -10,16 +10,16 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** v0.4.0 — `gua` exposes the new auto-runtime command surface
+> **Status:** v0.4.1 — `gua` exposes the new auto-runtime command surface
 > as safe placeholders. `daemon` still runs on a real NVIDIA host, `demo`
 > runs anywhere (no GPU required), and `report` reads either. The Go v0.1.0
 > implementation remains downloadable at tag `v0.1.0` / branch
 > [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
-## Download
+## Install
 
-Each `v*` tag builds a source distribution and wheel, then attaches both
-to the GitHub Release. The wheel has no core runtime dependencies.
+The recommended install path is PyPI via uv. The package has no core
+runtime dependencies.
 
 Requires [uv](https://docs.astral.sh/uv/). In normal online environments,
 uv creates the isolated tool environment and manages the needed Python
@@ -27,33 +27,30 @@ runtime. If Python downloads are disabled by local policy, install Python
 3.12+ first.
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0"
-WHEEL="gpu_usage_audit-0.4.0-py3-none-any.whl"
-
-curl -fsSLO "$BASE/$WHEEL"
-curl -fsSLO "$BASE/SHA256SUMS"
-sha256sum -c SHA256SUMS --ignore-missing
-
-uv tool install "./$WHEEL"
+uv tool install gpu-usage-audit
 
 gua doctor
 gua start --dry-run
 gpu-usage-audit demo
 ```
 
-In v0.4.0 the `gua` commands are intentionally read-only placeholders:
+In v0.4.1 the `gua` commands are intentionally read-only placeholders:
 they print what is not implemented yet and make no system, service,
 cluster, or database changes. Use `gpu-usage-audit daemon/report/demo`
 for the existing compatibility workflow.
 
-Available `gua` subcommands in v0.4.0: `doctor`, `start`, `status`,
+Available `gua` subcommands in v0.4.1: `doctor`, `start`, `status`,
 `report`, `stop`, and `uninstall`.
 
-For a one-off run without installing the tool, use the downloaded wheel
-directly:
+GitHub Release assets are also available for manual download:
 
 ```sh
-WHEEL="gpu_usage_audit-0.4.0-py3-none-any.whl"
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.1"
+WHEEL="gpu_usage_audit-0.4.1-py3-none-any.whl"
+
+curl -fsSLO "$BASE/$WHEEL"
+curl -fsSLO "$BASE/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing
 
 uvx --from "./$WHEEL" gua doctor
 ```
@@ -112,10 +109,8 @@ same every run. Adjust the shape with `--ticks N` and `--interval D`.
 On an NVIDIA host, install the `[nvml]` extra and run `daemon`:
 
 ```sh
-WHEEL="gpu_usage_audit-0.4.0-py3-none-any.whl"
-
 # Add the NVML Python package to the tool environment.
-uv tool install --force --with nvidia-ml-py "./$WHEEL"
+uv tool install --force --with nvidia-ml-py gpu-usage-audit
 
 gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 ```
@@ -251,7 +246,8 @@ uv run gpu-usage-audit demo      # see the report shape locally
 CI runs ruff + format check + mypy + pytest, then builds and smoke-tests
 the wheel on every push and PR. Tag pushes (`v*`) rerun the same checks,
 build sdist + wheel, smoke-test the wheel, and create a GitHub Release
-with auto-generated notes.
+with auto-generated notes. Release tags also publish the wheel and sdist
+to PyPI through Trusted Publishing.
 
 ## Non-goals
 
