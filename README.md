@@ -21,12 +21,24 @@ lunch — `nvidia-smi` will show 1% utilization, but the card is
 Each `v*` tag builds a source distribution and wheel, then attaches both
 to the GitHub Release. The wheel has no core runtime dependencies.
 
-```sh
-WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0/gpu_usage_audit-0.4.0-py3-none-any.whl"
+Requires [uv](https://docs.astral.sh/uv/). In normal online environments,
+uv creates the isolated tool environment and manages the needed Python
+runtime. If Python downloads are disabled by local policy, install Python
+3.12+ first.
 
-uvx --from "$WHEEL" gua doctor
-uvx --from "$WHEEL" gua start --dry-run
-uvx --from "$WHEEL" gpu-usage-audit demo
+```sh
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0"
+WHEEL="gpu_usage_audit-0.4.0-py3-none-any.whl"
+
+curl -fsSLO "$BASE/$WHEEL"
+curl -fsSLO "$BASE/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing
+
+uv tool install "./$WHEEL"
+
+gua doctor
+gua start --dry-run
+gpu-usage-audit demo
 ```
 
 In v0.4.0 the `gua` commands are intentionally read-only placeholders:
@@ -37,15 +49,13 @@ for the existing compatibility workflow.
 Available `gua` subcommands in v0.4.0: `doctor`, `start`, `status`,
 `report`, `stop`, and `uninstall`.
 
-Optional checksum verification:
+For a one-off run without installing the tool, use the downloaded wheel
+directly:
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0"
+WHEEL="gpu_usage_audit-0.4.0-py3-none-any.whl"
 
-curl -fsSLO "$BASE/gpu_usage_audit-0.4.0-py3-none-any.whl"
-curl -fsSLO "$BASE/SHA256SUMS"
-sha256sum -c SHA256SUMS --ignore-missing
-uvx --from ./gpu_usage_audit-0.4.0-py3-none-any.whl gua doctor
+uvx --from "./$WHEEL" gua doctor
 ```
 
 ## What you get
@@ -90,9 +100,7 @@ The `demo` subcommand records 30 ticks of fake telemetry and prints the
 report — all in one process, no second shell needed.
 
 ```sh
-WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0/gpu_usage_audit-0.4.0-py3-none-any.whl"
-
-uvx --from "$WHEEL" gpu-usage-audit demo
+gpu-usage-audit demo
 ```
 
 The bundled `FakeTier` produces a deterministic 5-tick workload —
@@ -104,19 +112,18 @@ same every run. Adjust the shape with `--ticks N` and `--interval D`.
 On an NVIDIA host, install the `[nvml]` extra and run `daemon`:
 
 ```sh
-# One-shot via uvx (recommended)
-uvx --from "$WHEEL" --with nvidia-ml-py \
-    gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+WHEEL="gpu_usage_audit-0.4.0-py3-none-any.whl"
 
-# Or a persistent install
-pip install 'gpu-usage-audit[nvml] @ <WHEEL>'
+# Add the NVML Python package to the tool environment.
+uv tool install --force --with nvidia-ml-py "./$WHEEL"
+
 gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
 ```
 
 Run the report from another shell:
 
 ```sh
-uvx --from "$WHEEL" gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
+gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
 ```
 
 > The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
