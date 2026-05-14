@@ -130,7 +130,7 @@ Host GPU:
   NVML: error, pynvml is not importable
 
 Fix:
-  Reinstall the tool environment: uv tool install --force gpu-usage-audit
+  - Reinstall the tool environment: uv tool install --force gpu-usage-audit
 ```
 
 `pynvml`이 import되지만 NVML init이 실패하면 packaging 문제가 아니라 host
@@ -142,10 +142,10 @@ driver/NVML 문제로 안내한다.
 Host GPU:
   /dev/nvidia*: ok, 10 GPU device files
   nvidia-smi: ok, 10 GPUs
-  NVML: error, loadable but init failed: NVML initialization failed: the NVIDIA driver and NVML library versions do not match. Detail: Driver/library version mismatch
+  NVML: error, loadable but init failed: the NVIDIA driver and NVML library versions do not match. Detail: Driver/library version mismatch
 
 Fix:
-  Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available and matches the loaded kernel driver; verify with `nvidia-smi -L`.
+  - Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available and matches the loaded kernel driver; verify with `nvidia-smi -L`.
 ```
 
 DB 파일이 이미 있으면 `doctor`는 바로 실패할 daemon 명령을 추천하지 않고,
@@ -208,6 +208,8 @@ tests는 계속 동작해야 한다. 기존 `gpu-usage-audit[nvml]` 설치 습�
 2. core dependency는 0으로 유지하고 doctor가 설치 명령을 강하게 안내한다.
    - 장점: 현재 packaging 철학 유지.
    - 단점: 베어메탈 사용자가 추가 `--with nvidia-ml-py` 단계를 밟아야 한다.
+   - PR B 결정: 채택하지 않음. 단, 기존 `gpu-usage-audit[nvml]` 설치 습관을
+     깨지 않도록 empty extra alias는 유지한다.
 
 ## Data Model For 1.0
 
@@ -246,7 +248,7 @@ Working state:
 
 ### PR B: Packaging And Install UX
 
-Status: implemented in branch `feature/bare-metal-packaging-install-ux`.
+Status: implemented in PR #10.
 
 Deliver:
 
@@ -257,6 +259,10 @@ Deliver:
 Working state:
 
 - 사용자는 베어메탈 host에서 설치 후 바로 `gua doctor`를 실행할 수 있다.
+- 기존 `gpu-usage-audit[nvml]` 설치 명령은 warning 없이 통과하지만,
+  `nvidia-ml-py`는 기본 dependency로 설치된다.
+- NVML init 실패는 에러 코드 기반으로 driver not loaded / missing
+  `libnvidia-ml.so.1` / driver-library mismatch를 구분한다.
 
 ### PR C: Bare Metal Runbook Hardening
 
@@ -307,8 +313,12 @@ gpu-usage-audit report --since 1h --interval 30s
 
 ## Deferred Work
 
-아래는 1.0 이후 다시 검토한다.
+아래는 1.0 GA 전 또는 1.0 이후 다시 검토한다.
 
+- `nvidia-ml-py` upper bound 정책 (`>=12.535,<13` 같은 known-good range 여부).
+- `NVMLInfo.failure_kind` 같은 구조적 실패 타입 도입.
+- unsupported text output에 `Blockers:` 섹션을 별도로 노출할지 결정.
+- raw NVML detail의 redact 옵션 또는 JSON 필드 분리.
 - Kubernetes current-node 진단.
 - GPU Operator staged NVML path.
 - Slurm allocation context.
