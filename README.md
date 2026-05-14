@@ -42,6 +42,18 @@ for the existing compatibility workflow.
 Available `gua` subcommands in v0.4.1: `doctor`, `start`, `status`,
 `report`, `stop`, and `uninstall`.
 
+Update or remove the installed tool with uv:
+
+```sh
+uv tool upgrade gpu-usage-audit
+uv tool uninstall gpu-usage-audit
+```
+
+`uv tool uninstall gpu-usage-audit` removes the installed Python tool and
+its `gua` / `gpu-usage-audit` commands. `gua uninstall` is different: it
+is reserved for future runtime cleanup and is a no-op placeholder in
+v0.4.1.
+
 GitHub Release assets are also available for manual download:
 
 ```sh
