@@ -42,6 +42,10 @@ no system, service, cluster, or database changes. Use
 workflow.
 
 Use `gua doctor --json` for the same report in a machine-readable form.
+The JSON includes local host and cluster diagnostic details such as paths
+and command stderr, so review it before sharing it outside your team.
+`gua doctor` does not need `sudo`; running it as root can change which
+Kubernetes config `kubectl` sees.
 
 Available `gua` subcommands: `doctor`, `start`, `status`, `report`,
 `stop`, and `uninstall`.

@@ -14,6 +14,9 @@ from typing import Literal
 
 from .classify import Class
 
+# PR 3 에서는 host-systemd/k8s-daemonset/local-container/unsupported 만 실제로
+# 추천한다. host-foreground/fake 는 PR 6 foreground runtime 과 demo/test plan 이
+# 같은 model 을 재사용할 수 있게 계획 문서의 vocabulary 를 먼저 고정한 것.
 RuntimeMode = Literal[
     "host-systemd",
     "host-foreground",
@@ -77,10 +80,10 @@ class HostMeta:
 
 @dataclass(slots=True)
 class PlannedAction:
-    """A future runtime action described by a dry-run plan.
+    """dry-run plan 이 설명하는 미래 runtime 작업.
 
-    `gua doctor` and `gua start --dry-run` only render these actions. They do
-    not execute them.
+    `gua doctor` 와 `gua start --dry-run` 은 이 작업을 출력만 하고 실행하지
+    않는다.
     """
 
     name: str
@@ -90,7 +93,7 @@ class PlannedAction:
 
 @dataclass(slots=True)
 class RuntimePlan:
-    """Structured recommendation for where the collector should run."""
+    """collector 를 어디에서 실행할지에 대한 구조화된 추천."""
 
     mode: RuntimeMode
     telemetry: TelemetrySource

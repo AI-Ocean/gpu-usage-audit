@@ -1,10 +1,11 @@
-"""Read-only environment detection for the `gua` command surface."""
+"""`gua` command surface 를 위한 읽기 전용 환경 진단."""
 
 from __future__ import annotations
 
 import contextlib
 import glob
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from .model import PlanConfidence, PlannedAction, RuntimePlan, SchedulerSource
 from .nvml import NVMLNotAvailableError, _decode, _load_pynvml
@@ -37,7 +38,7 @@ DEFAULT_CONTAINER_HOOK_PATHS = (
 
 @dataclass(slots=True)
 class CommandResult:
-    """Small subprocess result wrapper used to make probes easy to test."""
+    """probe 테스트를 단순하게 만드는 작은 subprocess 결과 래퍼."""
 
     returncode: int
     stdout: str = ""
@@ -50,7 +51,7 @@ type CommandRunner = Callable[[Sequence[str], float], CommandResult]
 
 @dataclass(slots=True)
 class DoctorCheck:
-    """One read-only diagnostic check."""
+    """읽기 전용 진단 항목 하나."""
 
     id: str
     name: str
@@ -138,9 +139,14 @@ class ContainerFallbackInfo:
     errors: list[str] = field(default_factory=list)
 
     @property
+    def has_access_blocker(self) -> bool:
+        return any("access required:" in error for error in self.errors)
+
+    @property
     def has_signal(self) -> bool:
         return bool(
-            self.engine_paths
+            not self.has_access_blocker
+            and self.engine_paths
             and (
                 self.nvidia_command_paths
                 or self.hook_paths
@@ -169,7 +175,7 @@ class DoctorReport:
 
 
 def run_command(cmd: Sequence[str], timeout: float) -> CommandResult:
-    """Run a read-only command with a short timeout."""
+    """읽기 전용 명령을 짧은 timeout 안에서 실행한다."""
     try:
         completed = subprocess.run(
             list(cmd),
@@ -206,13 +212,13 @@ def build_doctor_report(
     slurm_config_paths: Sequence[str] = DEFAULT_SLURM_CONFIG_PATHS,
     container_hook_paths: Sequence[str] = DEFAULT_CONTAINER_HOOK_PATHS,
 ) -> DoctorReport:
-    """Run all doctor probes and build a recommended RuntimePlan.
+    """모든 doctor probe 를 실행하고 추천 RuntimePlan 을 만든다.
 
-    Every probe is read-only. External commands are limited to short diagnostic
-    calls such as `kubectl auth can-i`, `kubectl get ...`, `scontrol show
-    config`, and container-runtime info commands.
+    모든 probe 는 읽기 전용이다. 외부 명령도 `kubectl auth can-i`,
+    `kubectl get ...`, `scontrol show config`, container-runtime info 같은
+    짧은 진단 호출로 제한한다.
     """
-    env_map = env if env is not None else dict(os_environ())
+    env_map = env if env is not None else dict(os.environ)
     exists = path_exists if path_exists is not None else _path_exists
     probe_nvml_func = nvml_probe if nvml_probe is not None else probe_nvml
     generated_at = now if now is not None else datetime.now(UTC)
@@ -263,13 +269,6 @@ def build_doctor_report(
         ],
         plan=plan,
     )
-
-
-def os_environ() -> Mapping[str, str]:
-    """Return process environment without importing os at module import sites."""
-    import os
-
-    return os.environ
 
 
 def probe_os() -> tuple[OSInfo, DoctorCheck]:
@@ -644,6 +643,8 @@ def probe_container_fallback(
         )
         if result.returncode == 0:
             docker_runtime_signal = "nvidia" in result.stdout.lower()
+        elif _looks_like_permission_denied(result):
+            errors.append(f"docker daemon access required: {_short_error(result)}")
         else:
             errors.append(f"docker info failed: {_short_error(result)}")
 
@@ -655,6 +656,8 @@ def probe_container_fallback(
         if result.returncode == 0:
             lowered = result.stdout.lower()
             podman_runtime_signal = "nvidia" in lowered or "oci-nvidia-hook" in lowered
+        elif _looks_like_permission_denied(result):
+            errors.append(f"podman access required: {_short_error(result)}")
         else:
             errors.append(f"podman info failed: {_short_error(result)}")
 
@@ -669,6 +672,9 @@ def probe_container_fallback(
     if info.has_signal:
         status: CheckStatus = "ok"
         summary = "NVIDIA container fallback signal detected"
+    elif info.has_access_blocker:
+        status = "warning"
+        summary = "; ".join(error for error in errors if "access required:" in error)
     elif engine_paths or nvidia_command_paths or existing_hooks:
         status = "warning"
         summary = "container tooling detected, but NVIDIA fallback is incomplete"
@@ -717,6 +723,10 @@ def select_runtime_plan(facts: DetectionFacts) -> RuntimePlan:
         else:
             reasons.append("No Kubernetes or Slurm scheduler signal needs a different runtime.")
         host_warnings: list[str] = []
+        if facts.kubernetes.inside_cluster:
+            host_warnings.append(
+                "Kubernetes in-cluster environment is present; host runtime means the collector sees the current namespace, not a managed DaemonSet yet."
+            )
         if not facts.devices.gpu_device_paths:
             host_warnings.append(
                 "NVML sees GPUs, but /dev/nvidia GPU device files were not listed in this namespace."
@@ -923,6 +933,19 @@ def _short_error(result: CommandResult) -> str:
     return text
 
 
+def _looks_like_permission_denied(result: CommandResult) -> bool:
+    text = f"{result.stderr}\n{result.stdout}".lower()
+    permission_markers = (
+        "permission denied",
+        "access denied",
+        "got permission denied",
+        "cannot connect to the docker daemon",
+        "is the docker daemon running",
+        "connect: permission denied",
+    )
+    return any(marker in text for marker in permission_markers)
+
+
 def _json_items(stdout: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(stdout)
@@ -933,7 +956,11 @@ def _json_items(stdout: str) -> list[dict[str, Any]]:
     items = data.get("items")
     if not isinstance(items, list):
         return []
-    return [cast(dict[str, Any], item) for item in items if isinstance(item, dict)]
+    dict_items: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            dict_items.append(item)
+    return dict_items
 
 
 def _parse_nvidia_runtime_classes(stdout: str) -> list[str]:

@@ -229,7 +229,7 @@ def _print_gua_placeholder(command: str, detail: str) -> int:
 
 
 def _cmd_gua_doctor(args: argparse.Namespace) -> int:
-    """Read-only environment detection and RuntimePlan recommendation."""
+    """읽기 전용 환경 진단과 RuntimePlan 추천."""
     report = build_doctor_report()
     if args.json:
         print(json.dumps(doctor_report_to_dict(report), indent=2, sort_keys=True))
@@ -242,7 +242,9 @@ def _cmd_gua_doctor(args: argparse.Namespace) -> int:
 def _cmd_gua_start(args: argparse.Namespace) -> int:
     """managed runtime start 구현 전의 dry-run 전용 placeholder."""
     if not args.dry_run:
-        print("gua start: only `gua start --dry-run` is available in this PR.", file=sys.stderr)
+        print(
+            "gua start: only `gua start --dry-run` is available in this version.", file=sys.stderr
+        )
         print(_NO_SYSTEM_CHANGES, file=sys.stderr)
         return 2
     report = build_doctor_report()

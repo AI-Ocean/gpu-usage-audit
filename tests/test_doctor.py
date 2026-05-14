@@ -1,4 +1,4 @@
-"""Runtime doctor detection and plan selection tests."""
+"""런타임 doctor 감지와 plan 선택 테스트."""
 
 from __future__ import annotations
 
@@ -185,6 +185,59 @@ def test_build_doctor_report_marks_unsupported_when_no_runtime_signal() -> None:
     rendered = render_doctor(report)
     assert "Recommended plan:" in rendered
     assert "runtime: unsupported" in rendered
+
+
+def test_build_doctor_report_warns_when_host_plan_is_inside_kubernetes() -> None:
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=True,
+            device_count=1,
+            driver_version="560.35.05",
+        ),
+        which=_which({}),
+        command_runner=FakeRunner({}),
+        env={"KUBERNETES_SERVICE_HOST": "10.0.0.1"},
+        path_exists=_exists(set()),
+        slurm_config_paths=(),
+        container_hook_paths=(),
+    )
+
+    assert report.plan.mode == "host-systemd"
+    assert any("in-cluster environment" in warning for warning in report.plan.warnings)
+
+
+def test_build_doctor_report_surfaces_docker_permission_denied() -> None:
+    runner = FakeRunner(
+        {
+            ("docker", "info", "--format", "{{json .Runtimes}}"): CommandResult(
+                returncode=1,
+                stderr="permission denied while trying to connect to the Docker daemon socket",
+            )
+        }
+    )
+
+    report = build_doctor_report(
+        dev_paths=[],
+        nvml_probe=lambda: NVMLInfo(loadable=True, initialized=False, error="no driver"),
+        which=_which(
+            {
+                "docker": "/usr/bin/docker",
+                "nvidia-container-runtime": "/usr/bin/nvidia-container-runtime",
+            }
+        ),
+        command_runner=runner,
+        env={},
+        path_exists=_exists(set()),
+        slurm_config_paths=(),
+        container_hook_paths=(),
+    )
+
+    container_check = next(check for check in report.checks if check.id == "container_fallback")
+    assert container_check.status == "warning"
+    assert "docker daemon access required" in container_check.summary
+    assert report.plan.mode == "unsupported"
 
 
 def _which(paths: Mapping[str, str]) -> Callable[[str], str | None]:
