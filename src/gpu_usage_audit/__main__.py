@@ -54,7 +54,6 @@ _DURATION_UNITS = {
     "h": "hours",
     "d": "days",
 }
-_NO_SYSTEM_CHANGES = "No system, service, cluster, or database changes were made."
 
 
 def _duration(s: str) -> timedelta:
@@ -147,11 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_gua_parser() -> argparse.ArgumentParser:
-    """New auto-runtime command surface skeleton.
+_NO_SYSTEM_CHANGES = "No system, service, cluster, or database changes were made."
 
-    The existing `gpu-usage-audit daemon/report/demo` path remains the
-    compatibility CLI while `gua` grows the auto-runtime workflow.
+
+def build_gua_parser() -> argparse.ArgumentParser:
+    """새 auto-runtime command surface skeleton 구성.
+
+    기존 `gpu-usage-audit daemon/report/demo` 경로는 compatibility CLI 로
+    유지하고, `gua` 는 auto-runtime workflow 를 위한 새 표면으로 둔다.
     """
     parser = argparse.ArgumentParser(
         prog="gua",
@@ -208,12 +210,14 @@ def build_gua_parser() -> argparse.ArgumentParser:
 
 
 def _print_gua_placeholder(command: str, detail: str) -> int:
+    """미구현 `gua` command 의 no-op placeholder 출력."""
     print(f"gua {command}: {detail}")
     print(_NO_SYSTEM_CHANGES)
     return 0
 
 
 def _cmd_gua_doctor(args: argparse.Namespace) -> int:
+    """doctor read-only detection 이 붙기 전의 placeholder."""
     return _print_gua_placeholder(
         args.command,
         "runtime detection is not implemented yet; this skeleton ran no checks.",
@@ -221,6 +225,7 @@ def _cmd_gua_doctor(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_start(args: argparse.Namespace) -> int:
+    """managed runtime start 구현 전의 dry-run 전용 placeholder."""
     if not args.dry_run:
         print(
             "gua start: only `gua start --dry-run` is available in this skeleton.", file=sys.stderr
@@ -228,12 +233,13 @@ def _cmd_gua_start(args: argparse.Namespace) -> int:
         print(_NO_SYSTEM_CHANGES, file=sys.stderr)
         return 2
     return _print_gua_placeholder(
-        "start --dry-run",
-        "runtime planning is not implemented yet; no start plan was applied.",
+        args.command,
+        "runtime planning is not implemented yet; --dry-run applied no start plan.",
     )
 
 
 def _cmd_gua_status(args: argparse.Namespace) -> int:
+    """install-state 기반 status 구현 전의 placeholder."""
     return _print_gua_placeholder(
         args.command,
         "install-state tracking is not implemented yet; no managed runtime is known.",
@@ -241,6 +247,8 @@ def _cmd_gua_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_report(args: argparse.Namespace) -> int:
+    """install-state 기반 report 구현 전의 compatibility 안내 placeholder."""
+    # TODO(PR 6): state-aware `gua report` 구현 시 compat CLI 안내 문구 갱신.
     return _print_gua_placeholder(
         args.command,
         "state-aware reporting is not implemented yet; use `gpu-usage-audit report --db PATH`.",
@@ -248,6 +256,7 @@ def _cmd_gua_report(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_stop(args: argparse.Namespace) -> int:
+    """managed runtime stop 구현 전의 placeholder."""
     return _print_gua_placeholder(
         args.command,
         "runtime management is not implemented yet; no managed runtime was stopped.",
@@ -255,6 +264,7 @@ def _cmd_gua_stop(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_uninstall(args: argparse.Namespace) -> int:
+    """managed runtime cleanup 구현 전의 placeholder."""
     return _print_gua_placeholder(
         args.command,
         "runtime cleanup is not implemented yet; no files or runtime artifacts were removed.",
@@ -398,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def gua_main(argv: list[str] | None = None) -> int:
-    """Entry point for the new `gua` command surface."""
+    """새 `gua` command surface entry point."""
     parser = build_gua_parser()
     args = parser.parse_args(argv)
 
