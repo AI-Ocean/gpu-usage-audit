@@ -34,14 +34,22 @@ fi
 
 "$tmpdir/venv/bin/python" - "$expected_version" <<'PY'
 import importlib.metadata
+import re
 import sys
+
+def canonicalize(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+def requirement_name(requirement):
+    match = re.match(r"\s*([A-Za-z0-9_.-]+)", requirement)
+    return canonicalize(match.group(1)) if match else ""
 
 expected_version = sys.argv[1]
 dist = importlib.metadata.distribution("gpu-usage-audit")
 if dist.version != expected_version:
     raise SystemExit(f"metadata version {dist.version} != wheel version {expected_version}")
 requires = dist.requires or []
-if not any(req.split(";")[0].strip().lower().startswith("nvidia-ml-py") for req in requires):
+if not any(requirement_name(req) == "nvidia-ml-py" for req in requires):
     raise SystemExit("wheel metadata does not require nvidia-ml-py")
 PY
 
@@ -60,4 +68,42 @@ fi
 
 "$tmpdir/venv/bin/gua" doctor
 "$tmpdir/venv/bin/gua" doctor --json >/dev/null
+
+mkdir "$tmpdir/fake-pynvml"
+cat >"$tmpdir/fake-pynvml/pynvml.py" <<'PY'
+NVML_ERROR_DRIVER_NOT_LOADED = 9
+NVML_ERROR_LIBRARY_NOT_FOUND = 12
+NVML_ERROR_LIB_RM_VERSION_MISMATCH = 19
+
+
+class NVMLError(Exception):
+    def __init__(self, value):
+        super().__init__("localized NVML error")
+        self.value = value
+
+
+def nvmlInit():
+    raise NVMLError(NVML_ERROR_LIB_RM_VERSION_MISMATCH)
+PY
+
+fake_nvml_json="$tmpdir/fake-nvml-doctor.json"
+PYTHONPATH="$tmpdir/fake-pynvml" "$tmpdir/venv/bin/gua" doctor --json >"$fake_nvml_json"
+"$tmpdir/venv/bin/python" - "$fake_nvml_json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+nvml = next(check for check in data["checks"] if check["id"] == "nvml")
+if nvml["details"]["loadable"] is not True:
+    raise SystemExit("fake pynvml was not loaded")
+if nvml["details"]["initialized"] is not False:
+    raise SystemExit("fake pynvml init failure was not reported")
+summary = nvml["summary"]
+if "versions do not match" not in summary:
+    raise SystemExit(f"unexpected NVML init summary: {summary}")
+if "NVML initialization failed" in summary:
+    raise SystemExit(f"summary still has duplicate init prefix: {summary}")
+PY
+
 "$tmpdir/venv/bin/gpu-usage-audit" demo --ticks 1 --interval 1ms >/dev/null

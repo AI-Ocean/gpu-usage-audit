@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from .model import RuntimePlan
-from .nvml import NVMLNotAvailableError, _decode, _load_pynvml, _nvml_init_error_message
+from .nvml import NVMLNotAvailableError, _decode, _load_pynvml, nvml_init_error_message
 
 type CheckStatus = Literal["ok", "warning", "error", "skipped"]
 type Which = Callable[[str], str | None]
@@ -324,7 +324,7 @@ def probe_nvml() -> NVMLInfo:
             driver_version=_decode(nvml.nvmlSystemGetDriverVersion()),
         )
     except nvml.NVMLError as e:
-        return NVMLInfo(loadable=True, initialized=False, error=_nvml_init_error_message(str(e)))
+        return NVMLInfo(loadable=True, initialized=False, error=nvml_init_error_message(e, nvml))
     except Exception as e:  # pragma: no cover - 플랫폼별 NVML 실패 방어.
         return NVMLInfo(loadable=True, initialized=False, error=str(e))
     finally:
@@ -692,8 +692,10 @@ def _host_warnings(facts: DetectionFacts) -> list[str]:
 def _fixes_for(report: DoctorReport) -> list[str]:
     checks = {check.id: check for check in report.checks}
     fixes: list[str] = []
-    if report.plan.blockers:
-        fixes.extend(report.plan.blockers)
+    if checks["nvidia_devices"].status == "error":
+        fixes.append("Run on an NVIDIA host where /dev/nvidia* device files are visible.")
+    if checks["nvidia_smi"].status == "error":
+        fixes.append("Install NVIDIA driver utilities so `nvidia-smi -L` lists this host's GPUs.")
     nvml = checks["nvml"].details
     if nvml.get("loadable") is False:
         fixes.append("Reinstall the tool environment: uv tool install --force gpu-usage-audit")
@@ -702,6 +704,9 @@ def _fixes_for(report: DoctorReport) -> list[str]:
             "Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available "
             "and matches the loaded kernel driver; verify with `nvidia-smi -L`."
         )
+    database = checks["default_db"]
+    if database.status == "error":
+        fixes.append("Choose a regular writable --db PATH whose parent directory exists.")
     return fixes
 
 

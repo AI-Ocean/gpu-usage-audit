@@ -71,7 +71,9 @@ class NVMLTier:
         try:
             nvml.nvmlInit()
         except nvml.NVMLError as e:
-            raise NVMLNotAvailableError(_nvml_init_error_message(str(e))) from e
+            raise NVMLNotAvailableError(
+                f"NVML initialization failed: {nvml_init_error_message(e, nvml)}"
+            ) from e
         self._nvml = nvml
         self._initialized = True
         return _decode(nvml.nvmlSystemGetDriverVersion())
@@ -123,15 +125,31 @@ class NVMLTier:
         self._initialized = False
 
 
-def _nvml_init_error_message(error: str) -> str:
-    detail = error.strip() or "unknown NVML error"
-    lowered = detail.lower()
-    if "shared library not found" in lowered or "libnvidia-ml" in lowered:
+def nvml_init_error_message(error: object, nvml: Any) -> str:
+    detail = str(error).strip() or "unknown NVML error"
+    reason = _nvml_error_reason(error, nvml, detail)
+    return f"{reason}. Detail: {detail}"
+
+
+def _nvml_error_reason(error: object, nvml: Any, detail: str) -> str:
+    code = getattr(error, "value", None)
+    if code == getattr(nvml, "NVML_ERROR_LIBRARY_NOT_FOUND", object()):
         reason = "libnvidia-ml.so.1 was not found"
-    elif "driver/library version mismatch" in lowered or "version mismatch" in lowered:
+    elif code == getattr(nvml, "NVML_ERROR_LIB_RM_VERSION_MISMATCH", object()):
         reason = "the NVIDIA driver and NVML library versions do not match"
-    elif "driver not loaded" in lowered or "no driver" in lowered:
+    elif code == getattr(nvml, "NVML_ERROR_DRIVER_NOT_LOADED", object()):
         reason = "the NVIDIA driver is not loaded"
     else:
-        reason = "driver or NVML initialization failed"
-    return f"NVML initialization failed: {reason}. Detail: {detail}"
+        reason = _fallback_nvml_error_reason(detail)
+    return reason
+
+
+def _fallback_nvml_error_reason(detail: str) -> str:
+    lowered = detail.lower()
+    if "shared library not found" in lowered or "libnvidia-ml" in lowered:
+        return "libnvidia-ml.so.1 was not found"
+    if "driver/library version mismatch" in lowered or "version mismatch" in lowered:
+        return "the NVIDIA driver and NVML library versions do not match"
+    if "driver not loaded" in lowered or "no driver" in lowered:
+        return "the NVIDIA driver is not loaded"
+    return "driver or NVML initialization failed"

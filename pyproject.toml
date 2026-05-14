@@ -18,6 +18,10 @@ classifiers = [
 # GPU 없는 개발/CI/demo 환경에서도 import 는 가능하고, driver/NVML init 만 실패한다.
 dependencies = ["nvidia-ml-py>=12.535"]
 
+[project.optional-dependencies]
+# Backward-compatible alias. NVML is now installed by default.
+nvml = []
+
 [project.scripts]
 # pip / uvx 가 만들 entry point. `uvx gpu-usage-audit ...` 한 줄로 실행.
 gpu-usage-audit = "gpu_usage_audit.__main__:main"

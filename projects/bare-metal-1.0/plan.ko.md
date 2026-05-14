@@ -198,7 +198,8 @@ GPU 없는 환경의 형식 확인용으로 유지한다. 제품 핵심 workflow
 베어메탈 전용 제품으로 정리하면 NVML은 optional feature가 아니라 사실상 핵심
 기능이다. PR B에서는 1번을 선택한다. GPU 없는 개발/문서/CI 환경에서는
 `nvidia-ml-py` import는 가능하고, driver/NVML init만 실패해야 하며 `demo`와
-tests는 계속 동작해야 한다.
+tests는 계속 동작해야 한다. 기존 `gpu-usage-audit[nvml]` 설치 습관은 깨지지
+않게 빈 compatibility extra로 남긴다.
 
 1. `nvidia-ml-py`를 기본 dependency로 올린다.
    - 장점: `uv tool install gpu-usage-audit` 후 바로 host NVML 진단 가능.

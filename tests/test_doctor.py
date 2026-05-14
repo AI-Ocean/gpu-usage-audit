@@ -113,8 +113,8 @@ def test_build_doctor_report_guides_driver_repair_when_nvml_init_fails(tmp_path:
             loadable=True,
             initialized=False,
             error=(
-                "NVML initialization failed: the NVIDIA driver and NVML library versions "
-                "do not match. Detail: Driver/library version mismatch"
+                "the NVIDIA driver and NVML library versions do not match. "
+                "Detail: Driver/library version mismatch"
             ),
         ),
         which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
@@ -132,6 +132,8 @@ def test_build_doctor_report_guides_driver_repair_when_nvml_init_fails(tmp_path:
     rendered = render_doctor(report)
     assert report.plan.mode == "unsupported"
     assert "NVML: error, loadable but init failed" in rendered
+    assert "loadable but init failed: the NVIDIA driver" in rendered
+    assert "loadable but init failed: NVML initialization failed" not in rendered
     assert "Install or repair the NVIDIA driver" in rendered
     assert "libnvidia-ml.so.1" in rendered
     assert "uv tool install --force --with nvidia-ml-py" not in rendered
