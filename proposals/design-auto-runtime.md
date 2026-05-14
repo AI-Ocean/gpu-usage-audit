@@ -1,6 +1,6 @@
 # gpu-usage-audit auto-runtime design
 
-Status: draft  
+Status: draft
 Date: 2026-05-12
 
 ## Summary
