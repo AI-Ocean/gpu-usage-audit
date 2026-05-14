@@ -46,4 +46,5 @@ if [[ "$gua_version" != "$expected_version" ]]; then
 fi
 
 "$tmpdir/venv/bin/gua" doctor
-"$tmpdir/venv/bin/gua" start --dry-run
+"$tmpdir/venv/bin/gua" doctor --json >/dev/null
+"$tmpdir/venv/bin/gpu-usage-audit" demo --ticks 1 --interval 1ms >/dev/null

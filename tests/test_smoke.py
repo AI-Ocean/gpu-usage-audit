@@ -57,17 +57,13 @@ def test_pyproject_registers_gua_entry_point() -> None:
 
 def test_gua_parser_registers_command_surface() -> None:
     p = build_gua_parser()
-    for cmd in ("doctor", "status", "report", "stop", "uninstall"):
-        ns = p.parse_args([cmd])
-        assert ns.command == cmd
-
     ns = p.parse_args(["doctor", "--json"])
     assert ns.command == "doctor"
     assert ns.json is True
 
-    ns = p.parse_args(["start", "--dry-run"])
-    assert ns.command == "start"
-    assert ns.dry_run is True
+    ns = p.parse_args(["doctor", "--db", "/var/lib/gua/gua.db"])
+    assert ns.command == "doctor"
+    assert ns.db == "/var/lib/gua/gua.db"
 
 
 def _required_args_for(cmd: str) -> list[str]:
@@ -94,27 +90,6 @@ def test_main_no_args_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
     assert "usage:" in capsys.readouterr().err.lower()
 
 
-@pytest.mark.parametrize(
-    ("argv", "want"),
-    [
-        (["status"], "install-state tracking is not implemented yet"),
-        (["report"], "gpu-usage-audit report --db PATH"),
-        (["stop"], "runtime management is not implemented yet"),
-        (["uninstall"], "runtime cleanup is not implemented yet"),
-    ],
-)
-def test_gua_placeholder_commands_do_not_change_state(
-    argv: list[str],
-    want: str,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    rc = gua_main(argv)
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert want in captured.out
-    assert "No system, service, cluster, or database changes were made." in captured.out
-
-
 def test_gua_doctor_prints_runtime_plan(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -124,10 +99,10 @@ def test_gua_doctor_prints_runtime_plan(
     rc = gua_main(["doctor"])
     captured = capsys.readouterr()
     assert rc == 0
-    assert "Detected environment:" in captured.out
-    assert "Recommended plan:" in captured.out
-    assert "runtime: host-systemd" in captured.out
-    assert "No system, service, cluster, or database changes were made." in captured.out
+    assert "Scope:" in captured.out
+    assert "machine: local" in captured.out
+    assert "Host GPU:" in captured.out
+    assert "Recommended commands:" in captured.out
 
 
 def test_gua_doctor_json_prints_machine_readable_report(
@@ -140,36 +115,32 @@ def test_gua_doctor_json_prints_machine_readable_report(
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert rc == 0
+    assert data["scope"] == {"machine": "local"}
     assert data["read_only"] is True
     assert data["no_system_changes"] is True
-    assert data["plan"]["mode"] == "host-systemd"
+    assert data["plan"]["mode"] == "host"
     assert "No system" not in captured.out
 
 
-def test_gua_start_dry_run_prints_recommended_plan(
+def test_gua_doctor_passes_db_path_to_report_builder(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr("gpu_usage_audit.__main__.build_doctor_report", _fake_doctor_report)
+    db_path = tmp_path / "custom.db"
+    seen: dict[str, str | Path] = {}
 
-    rc = gua_main(["start", "--dry-run"])
-    captured = capsys.readouterr()
+    def fake_report(*, db_path: str | Path) -> DoctorReport:
+        seen["db_path"] = db_path
+        return _fake_doctor_report(db_path=db_path)
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.build_doctor_report", fake_report)
+
+    rc = gua_main(["doctor", "--db", str(db_path)])
+
     assert rc == 0
-    assert "gua start --dry-run" in captured.out
-    assert "Recommended plan:" in captured.out
-    assert "runtime: host-systemd" in captured.out
-    assert "Collector start/stop is not implemented yet" in captured.out
-    assert "No system, service, cluster, or database changes were made." in captured.out
-
-
-def test_gua_start_without_dry_run_is_unsupported(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    rc = gua_main(["start"])
-    captured = capsys.readouterr()
-    assert rc == 2
-    assert "gua start --dry-run" in captured.err
-    assert "No system, service, cluster, or database changes were made." in captured.err
+    assert seen["db_path"] == str(db_path)
+    assert f"target: {db_path}" in capsys.readouterr().out
 
 
 def test_daemon_refuses_existing_db_before_nvml(
@@ -198,23 +169,48 @@ def test_report_refuses_missing_db_without_creating_it(
     assert not db_path.exists()
 
 
-def _fake_doctor_report() -> DoctorReport:
+def _fake_doctor_report(*, db_path: str | Path = DEFAULT_DB_PATH) -> DoctorReport:
     return DoctorReport(
         generated_at=datetime(2026, 5, 14, 0, 0, tzinfo=UTC),
         checks=[
             DoctorCheck(
-                id="nvml",
-                name="host NVML",
+                id="os",
+                name="OS/kernel/Python",
                 status="ok",
-                summary="initialized, GPU count=2",
-            )
+                summary="Linux 6.0, Python 3.12.0",
+            ),
+            DoctorCheck(
+                id="nvidia_devices",
+                name="/dev/nvidia*",
+                status="ok",
+                summary="2 GPU device files",
+            ),
+            DoctorCheck(
+                id="nvidia_smi",
+                name="nvidia-smi",
+                status="ok",
+                summary="2 GPUs",
+            ),
+            DoctorCheck(
+                id="nvml",
+                name="NVML",
+                status="ok",
+                summary="initialized, GPU count=2, driver 560.35.05",
+            ),
+            DoctorCheck(
+                id="default_db",
+                name="default DB path",
+                status="ok",
+                summary="absent, ready for a new daemon run",
+                details={"path": str(db_path), "is_default": Path(db_path) == DEFAULT_DB_PATH},
+            ),
         ],
         plan=RuntimePlan(
-            mode="host-systemd",
+            mode="host",
             telemetry="nvml",
             scheduler="none",
             confidence="high",
-            reasons=["Host NVML initialized and sees 2 GPU(s)."],
+            reasons=["Local NVML initialized and sees 2 GPU(s)."],
         ),
     )
 

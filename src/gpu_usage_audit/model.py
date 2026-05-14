@@ -14,18 +14,9 @@ from typing import Literal
 
 from .classify import Class
 
-# PR 3 에서는 host-systemd/k8s-daemonset/local-container/unsupported 만 실제로
-# 추천한다. host-foreground/fake 는 PR 6 foreground runtime 과 demo/test plan 이
-# 같은 model 을 재사용할 수 있게 계획 문서의 vocabulary 를 먼저 고정한 것.
-RuntimeMode = Literal[
-    "host-systemd",
-    "host-foreground",
-    "k8s-daemonset",
-    "local-container",
-    "unsupported",
-]
-TelemetrySource = Literal["nvml", "fake"]
-SchedulerSource = Literal["none", "k8s", "slurm"]
+RuntimeMode = Literal["host", "unsupported"]
+TelemetrySource = Literal["nvml"]
+SchedulerSource = Literal["none"]
 PlanConfidence = Literal["high", "medium", "low"]
 
 
@@ -79,21 +70,8 @@ class HostMeta:
 
 
 @dataclass(slots=True)
-class PlannedAction:
-    """dry-run plan 이 설명하는 미래 runtime 작업.
-
-    `gua doctor` 와 `gua start --dry-run` 은 이 작업을 출력만 하고 실행하지
-    않는다.
-    """
-
-    name: str
-    summary: str
-    changes_system: bool
-
-
-@dataclass(slots=True)
 class RuntimePlan:
-    """collector 를 어디에서 실행할지에 대한 구조화된 추천."""
+    """`gua doctor` 가 만든 로컬 호스트 readiness 판정."""
 
     mode: RuntimeMode
     telemetry: TelemetrySource
@@ -103,7 +81,6 @@ class RuntimePlan:
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     required_privileges: list[str] = field(default_factory=list)
-    actions: list[PlannedAction] = field(default_factory=list)
 
 
 @dataclass(slots=True)

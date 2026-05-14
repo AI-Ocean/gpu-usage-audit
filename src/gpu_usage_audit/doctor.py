@@ -1,44 +1,36 @@
-"""`gua` command surface 를 위한 읽기 전용 환경 진단."""
+"""`gua doctor` 의 읽기 전용 로컬 bare-metal readiness 진단."""
 
 from __future__ import annotations
 
 import contextlib
 import glob
-import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from .model import PlanConfidence, PlannedAction, RuntimePlan, SchedulerSource
+from .model import RuntimePlan
 from .nvml import NVMLNotAvailableError, _decode, _load_pynvml
 
 type CheckStatus = Literal["ok", "warning", "error", "skipped"]
-type PathExists = Callable[[str], bool]
 type Which = Callable[[str], str | None]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 3.0
-DEFAULT_SLURM_CONFIG_PATHS = (
-    "/etc/slurm/slurm.conf",
-    "/etc/slurm/gres.conf",
-    "/etc/slurm-llnl/slurm.conf",
-    "/etc/slurm-llnl/gres.conf",
-)
-DEFAULT_CONTAINER_HOOK_PATHS = (
-    "/usr/share/containers/oci/hooks.d/oci-nvidia-hook.json",
-    "/etc/containers/oci/hooks.d/oci-nvidia-hook.json",
-)
+DEFAULT_DB_PATH = Path("/tmp/gua.db")
+COLLECT_COMMAND = "gpu-usage-audit daemon --interval 30s"
+REPORT_COMMAND = "gpu-usage-audit report --since 1h --interval 30s"
 
 
 @dataclass(slots=True)
 class CommandResult:
-    """probe 테스트를 단순하게 만드는 작은 subprocess 결과 래퍼."""
+    """진단 probe 와 테스트에서 쓰는 작은 subprocess 결과 래퍼."""
 
     returncode: int
     stdout: str = ""
@@ -51,7 +43,7 @@ type CommandRunner = Callable[[Sequence[str], float], CommandResult]
 
 @dataclass(slots=True)
 class DoctorCheck:
-    """읽기 전용 진단 항목 하나."""
+    """읽기 전용 readiness 진단 항목 하나."""
 
     id: str
     name: str
@@ -78,6 +70,18 @@ class NvidiaDeviceInfo:
 
 
 @dataclass(slots=True)
+class NvidiaSMIInfo:
+    found: bool
+    path: str | None = None
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    gpu_lines: list[str] = field(default_factory=list)
+    mig_lines: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class NVMLInfo:
     loadable: bool
     initialized: bool
@@ -90,81 +94,24 @@ type NVMLProbe = Callable[[], NVMLInfo]
 
 
 @dataclass(slots=True)
-class KubectlInfo:
-    found: bool
-    path: str | None = None
-    auth_ok: bool = False
-    auth_summary: str = "kubectl not found"
-    auth_returncode: int | None = None
-
-
-@dataclass(slots=True)
-class KubernetesRuntimeInfo:
-    inside_cluster: bool
-    nvidia_runtime_classes: list[str] = field(default_factory=list)
-    gpu_capacity_nodes: list[str] = field(default_factory=list)
-    gpu_label_nodes: list[str] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-
-    @property
-    def has_signal(self) -> bool:
-        return bool(
-            self.inside_cluster
-            or self.nvidia_runtime_classes
-            or self.gpu_capacity_nodes
-            or self.gpu_label_nodes
-        )
-
-
-@dataclass(slots=True)
-class SlurmInfo:
-    command_paths: dict[str, str]
-    config_paths: list[str]
-    scontrol_config_ok: bool = False
-    scontrol_config_mentions_gres: bool = False
-    scontrol_error: str | None = None
-
-    @property
-    def has_signal(self) -> bool:
-        return bool(self.command_paths or self.config_paths or self.scontrol_config_ok)
-
-
-@dataclass(slots=True)
-class ContainerFallbackInfo:
-    engine_paths: dict[str, str]
-    nvidia_command_paths: dict[str, str]
-    hook_paths: list[str]
-    docker_runtime_signal: bool = False
-    podman_runtime_signal: bool = False
-    errors: list[str] = field(default_factory=list)
-
-    @property
-    def has_access_blocker(self) -> bool:
-        return any("access required:" in error for error in self.errors)
-
-    @property
-    def has_signal(self) -> bool:
-        return bool(
-            not self.has_access_blocker
-            and self.engine_paths
-            and (
-                self.nvidia_command_paths
-                or self.hook_paths
-                or self.docker_runtime_signal
-                or self.podman_runtime_signal
-            )
-        )
+class DatabaseInfo:
+    path: str
+    is_default: bool
+    exists: bool
+    is_file: bool
+    parent_exists: bool
+    parent_writable: bool
+    size_bytes: int | None = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
 class DetectionFacts:
     os: OSInfo
     devices: NvidiaDeviceInfo
+    nvidia_smi: NvidiaSMIInfo
     nvml: NVMLInfo
-    kubectl: KubectlInfo
-    kubernetes: KubernetesRuntimeInfo
-    slurm: SlurmInfo
-    container: ContainerFallbackInfo
+    database: DatabaseInfo
 
 
 @dataclass(slots=True)
@@ -175,7 +122,7 @@ class DoctorReport:
 
 
 def run_command(cmd: Sequence[str], timeout: float) -> CommandResult:
-    """읽기 전용 명령을 짧은 timeout 안에서 실행한다."""
+    """짧은 읽기 전용 진단 명령을 timeout 안에서 실행한다."""
     try:
         completed = subprocess.run(
             list(cmd),
@@ -207,53 +154,24 @@ def build_doctor_report(
     command_runner: CommandRunner = run_command,
     nvml_probe: NVMLProbe | None = None,
     which: Which = shutil.which,
-    env: Mapping[str, str] | None = None,
-    path_exists: PathExists | None = None,
-    slurm_config_paths: Sequence[str] = DEFAULT_SLURM_CONFIG_PATHS,
-    container_hook_paths: Sequence[str] = DEFAULT_CONTAINER_HOOK_PATHS,
+    db_path: str | Path = DEFAULT_DB_PATH,
 ) -> DoctorReport:
-    """모든 doctor probe 를 실행하고 추천 RuntimePlan 을 만든다.
-
-    모든 probe 는 읽기 전용이다. 외부 명령도 `kubectl auth can-i`,
-    `kubectl get ...`, `scontrol show config`, container-runtime info 같은
-    짧은 진단 호출로 제한한다.
-    """
-    env_map = env if env is not None else dict(os.environ)
-    exists = path_exists if path_exists is not None else _path_exists
+    """로컬 bare-metal readiness probe 를 실행하고 host/unsupported 판정을 만든다."""
     probe_nvml_func = nvml_probe if nvml_probe is not None else probe_nvml
     generated_at = now if now is not None else datetime.now(UTC)
 
     os_info, os_check = probe_os()
     device_info, device_check = probe_nvidia_devices(dev_paths)
+    smi_info, smi_check = probe_nvidia_smi(which=which, command_runner=command_runner)
     nvml_info = probe_nvml_func()
     nvml_check = check_nvml(nvml_info)
-    kubectl_info, kubectl_check = probe_kubectl(which=which, command_runner=command_runner)
-    kubernetes_info, kubernetes_check = probe_kubernetes_runtime(
-        kubectl=kubectl_info,
-        command_runner=command_runner,
-        env=env_map,
-    )
-    slurm_info, slurm_check = probe_slurm(
-        which=which,
-        command_runner=command_runner,
-        env=env_map,
-        path_exists=exists,
-        config_paths=slurm_config_paths,
-    )
-    container_info, container_check = probe_container_fallback(
-        which=which,
-        command_runner=command_runner,
-        path_exists=exists,
-        hook_paths=container_hook_paths,
-    )
+    database_info, database_check = probe_default_db(db_path)
     facts = DetectionFacts(
         os=os_info,
         devices=device_info,
+        nvidia_smi=smi_info,
         nvml=nvml_info,
-        kubectl=kubectl_info,
-        kubernetes=kubernetes_info,
-        slurm=slurm_info,
-        container=container_info,
+        database=database_info,
     )
     plan = select_runtime_plan(facts)
     return DoctorReport(
@@ -261,11 +179,9 @@ def build_doctor_report(
         checks=[
             os_check,
             device_check,
+            smi_check,
             nvml_check,
-            kubectl_check,
-            kubernetes_check,
-            slurm_check,
-            container_check,
+            database_check,
         ],
         plan=plan,
     )
@@ -311,11 +227,14 @@ def probe_nvidia_devices(
         gpu_device_paths=gpu_paths,
         control_device_paths=control_paths,
     )
-    if paths:
+    if gpu_paths:
         status: CheckStatus = "ok"
-        summary = f"{len(paths)} entries ({len(gpu_paths)} GPU device files)"
-    else:
+        summary = f"{len(gpu_paths)} GPU device files"
+    elif paths:
         status = "warning"
+        summary = "found /dev/nvidia* entries, but no GPU device files"
+    else:
+        status = "error"
         summary = "no /dev/nvidia* entries found"
     return info, DoctorCheck(
         id="nvidia_devices",
@@ -326,6 +245,64 @@ def probe_nvidia_devices(
             "paths": info.paths,
             "gpu_device_paths": info.gpu_device_paths,
             "control_device_paths": info.control_device_paths,
+        },
+    )
+
+
+def probe_nvidia_smi(
+    *,
+    which: Which,
+    command_runner: CommandRunner,
+) -> tuple[NvidiaSMIInfo, DoctorCheck]:
+    path = which("nvidia-smi")
+    if path is None:
+        info = NvidiaSMIInfo(found=False)
+        return info, DoctorCheck(
+            id="nvidia_smi",
+            name="nvidia-smi",
+            status="error",
+            summary="not found on PATH",
+            details={"found": False},
+        )
+
+    result = command_runner(["nvidia-smi", "-L"], DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    gpu_lines, mig_lines = _nvidia_smi_list_lines(result.stdout)
+    info = NvidiaSMIInfo(
+        found=True,
+        path=path,
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        timed_out=result.timed_out,
+        gpu_lines=gpu_lines,
+        mig_lines=mig_lines,
+    )
+    if result.returncode == 0 and (gpu_lines or mig_lines):
+        status: CheckStatus = "ok"
+        summary = _nvidia_smi_summary(gpu_lines, mig_lines)
+    elif result.timed_out:
+        status = "error"
+        summary = f"`nvidia-smi -L` timed out after {DEFAULT_COMMAND_TIMEOUT_SECONDS:g}s"
+    elif result.returncode == 0:
+        status = "error"
+        summary = "`nvidia-smi -L` returned no GPUs"
+    else:
+        status = "error"
+        summary = f"`nvidia-smi -L` failed: {_short_error(result)}"
+    return info, DoctorCheck(
+        id="nvidia_smi",
+        name="nvidia-smi",
+        status=status,
+        summary=summary,
+        details={
+            "found": True,
+            "path": path,
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "timed_out": result.timed_out,
+            "gpu_lines": gpu_lines,
+            "mig_lines": mig_lines,
         },
     )
 
@@ -348,7 +325,7 @@ def probe_nvml() -> NVMLInfo:
         )
     except nvml.NVMLError as e:
         return NVMLInfo(loadable=True, initialized=False, error=str(e))
-    except Exception as e:  # pragma: no cover - defensive for platform-specific NVML failures.
+    except Exception as e:  # pragma: no cover - 플랫폼별 NVML 실패 방어.
         return NVMLInfo(loadable=True, initialized=False, error=str(e))
     finally:
         if initialized:
@@ -367,16 +344,16 @@ def check_nvml(info: NVMLInfo) -> DoctorCheck:
     if not info.loadable:
         return DoctorCheck(
             id="nvml",
-            name="host NVML",
-            status="warning",
-            summary=f"unavailable: {_one_line(info.error)}",
+            name="NVML",
+            status="error",
+            summary=f"pynvml is not installed or loadable: {_one_line(info.error)}",
             details=details,
         )
     if not info.initialized:
         return DoctorCheck(
             id="nvml",
-            name="host NVML",
-            status="warning",
+            name="NVML",
+            status="error",
             summary=f"loadable but init failed: {_one_line(info.error)}",
             details=details,
         )
@@ -384,496 +361,179 @@ def check_nvml(info: NVMLInfo) -> DoctorCheck:
         driver = f", driver {info.driver_version}" if info.driver_version else ""
         return DoctorCheck(
             id="nvml",
-            name="host NVML",
+            name="NVML",
             status="ok",
             summary=f"initialized, GPU count={info.device_count}{driver}",
             details=details,
         )
     return DoctorCheck(
         id="nvml",
-        name="host NVML",
-        status="warning",
+        name="NVML",
+        status="error",
         summary="initialized, GPU count=0",
         details=details,
     )
 
 
-def probe_kubectl(
-    *,
-    which: Which,
-    command_runner: CommandRunner,
-) -> tuple[KubectlInfo, DoctorCheck]:
-    path = which("kubectl")
-    if path is None:
-        info = KubectlInfo(found=False)
-        return info, DoctorCheck(
-            id="kubectl",
-            name="kubectl",
-            status="skipped",
-            summary="not found",
-            details={"found": False},
-        )
-
-    result = command_runner(
-        ["kubectl", "auth", "can-i", "get", "pods", "--all-namespaces"],
-        DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    )
-    stdout = result.stdout.strip().lower()
-    auth_ok = result.returncode == 0 and stdout.startswith("yes")
-    if auth_ok:
-        status: CheckStatus = "ok"
-        summary = "found and authenticated for pod reads"
-    elif result.timed_out:
-        status = "warning"
-        summary = "found, auth check timed out"
-    elif result.returncode == 0:
-        status = "warning"
-        summary = f"found, auth check returned {result.stdout.strip() or 'unknown'}"
-    else:
-        status = "warning"
-        summary = f"found, auth check failed: {_short_error(result)}"
-    info = KubectlInfo(
-        found=True,
-        path=path,
-        auth_ok=auth_ok,
-        auth_summary=summary,
-        auth_returncode=result.returncode,
-    )
-    return info, DoctorCheck(
-        id="kubectl",
-        name="kubectl",
-        status=status,
-        summary=summary,
-        details={
-            "found": True,
-            "path": path,
-            "auth_ok": auth_ok,
-            "auth_returncode": result.returncode,
-            "auth_stdout": result.stdout.strip(),
-            "auth_stderr": result.stderr.strip(),
-            "timed_out": result.timed_out,
-        },
-    )
-
-
-def probe_kubernetes_runtime(
-    *,
-    kubectl: KubectlInfo,
-    command_runner: CommandRunner,
-    env: Mapping[str, str],
-) -> tuple[KubernetesRuntimeInfo, DoctorCheck]:
-    inside_cluster = "KUBERNETES_SERVICE_HOST" in env
-    status: CheckStatus
-    if not kubectl.found:
-        info = KubernetesRuntimeInfo(inside_cluster=inside_cluster)
-        status = "warning" if inside_cluster else "skipped"
-        summary = (
-            "inside-cluster environment is present, but kubectl is not found"
-            if inside_cluster
-            else "skipped because kubectl is not found"
+def probe_default_db(db_path: str | Path = DEFAULT_DB_PATH) -> tuple[DatabaseInfo, DoctorCheck]:
+    path = Path(db_path)
+    display_path = str(path)
+    parent = path.parent
+    is_default = path == DEFAULT_DB_PATH
+    try:
+        exists = path.exists()
+        is_file = path.is_file() if exists else False
+        parent_exists = parent.exists()
+        # ACL, root_squash, capability 기반 권한에서는 warning-only 근사값일 수 있다.
+        parent_writable = parent_exists and os.access(parent, os.W_OK)
+        size_bytes = path.stat().st_size if exists and is_file else None
+        error = None
+    except OSError as e:
+        info = DatabaseInfo(
+            path=display_path,
+            is_default=is_default,
+            exists=False,
+            is_file=False,
+            parent_exists=False,
+            parent_writable=False,
+            error=str(e),
         )
         return info, DoctorCheck(
-            id="kubernetes_runtime",
-            name="Kubernetes runtime signal",
-            status=status,
-            summary=summary,
-            details={"inside_cluster": inside_cluster},
+            id="default_db",
+            name="default DB path",
+            status="error",
+            summary=f"cannot inspect {display_path}: {e}",
+            details=_database_details(info),
         )
 
-    errors: list[str] = []
-    runtime_classes: list[str] = []
-    gpu_capacity_nodes: list[str] = []
-    gpu_label_nodes: list[str] = []
-
-    if kubectl.auth_ok:
-        runtime_result = command_runner(
-            ["kubectl", "get", "runtimeclass", "-o", "json"],
-            DEFAULT_COMMAND_TIMEOUT_SECONDS,
-        )
-        if runtime_result.returncode == 0:
-            runtime_classes = _parse_nvidia_runtime_classes(runtime_result.stdout)
-        else:
-            errors.append(f"runtimeclass query failed: {_short_error(runtime_result)}")
-
-        node_result = command_runner(
-            ["kubectl", "get", "nodes", "-o", "json"],
-            DEFAULT_COMMAND_TIMEOUT_SECONDS,
-        )
-        if node_result.returncode == 0:
-            gpu_capacity_nodes, gpu_label_nodes = _parse_gpu_node_signals(node_result.stdout)
-        else:
-            errors.append(f"node query failed: {_short_error(node_result)}")
-    else:
-        errors.append("kubectl auth is not available")
-
-    info = KubernetesRuntimeInfo(
-        inside_cluster=inside_cluster,
-        nvidia_runtime_classes=runtime_classes,
-        gpu_capacity_nodes=gpu_capacity_nodes,
-        gpu_label_nodes=gpu_label_nodes,
-        errors=errors,
+    info = DatabaseInfo(
+        path=display_path,
+        is_default=is_default,
+        exists=exists,
+        is_file=is_file,
+        parent_exists=parent_exists,
+        parent_writable=parent_writable,
+        size_bytes=size_bytes,
+        error=error,
     )
-
-    if info.has_signal:
+    if exists and is_file:
+        status: CheckStatus = "warning"
+        summary = "present; daemon will refuse the default path, report can read it"
+    elif exists:
+        status = "error"
+        summary = "present but is not a regular file"
+    elif not parent_exists:
+        status = "error"
+        summary = f"absent, parent directory does not exist: {parent}"
+    elif not parent_writable:
+        status = "warning"
+        summary = f"absent, parent directory may not be writable: {parent}"
+    else:
         status = "ok"
-        summary_parts: list[str] = []
-        if inside_cluster:
-            summary_parts.append("inside-cluster env")
-        if runtime_classes:
-            summary_parts.append(f"runtimeClass={','.join(runtime_classes)}")
-        if gpu_capacity_nodes:
-            summary_parts.append(f"GPU capacity nodes={len(gpu_capacity_nodes)}")
-        if gpu_label_nodes:
-            summary_parts.append(f"GPU label nodes={len(gpu_label_nodes)}")
-        summary = "; ".join(summary_parts)
-    elif errors:
-        status = "warning"
-        summary = "; ".join(errors)
-    else:
-        status = "skipped"
-        summary = "no NVIDIA Kubernetes runtime or GPU node signal found"
-
+        summary = "absent, ready for a new daemon run"
     return info, DoctorCheck(
-        id="kubernetes_runtime",
-        name="Kubernetes runtime signal",
+        id="default_db",
+        name="default DB path",
         status=status,
         summary=summary,
-        details={
-            "inside_cluster": inside_cluster,
-            "nvidia_runtime_classes": runtime_classes,
-            "gpu_capacity_nodes": gpu_capacity_nodes,
-            "gpu_label_nodes": gpu_label_nodes,
-            "errors": errors,
-        },
-    )
-
-
-def probe_slurm(
-    *,
-    which: Which,
-    command_runner: CommandRunner,
-    env: Mapping[str, str],
-    path_exists: PathExists,
-    config_paths: Sequence[str],
-) -> tuple[SlurmInfo, DoctorCheck]:
-    command_paths = {
-        name: path for name in ("sinfo", "scontrol", "squeue") if (path := which(name)) is not None
-    }
-    candidate_configs = list(config_paths)
-    slurm_conf = env.get("SLURM_CONF")
-    if slurm_conf:
-        candidate_configs.insert(0, slurm_conf)
-    existing_configs = [path for path in candidate_configs if path_exists(path)]
-
-    scontrol_config_ok = False
-    scontrol_mentions_gres = False
-    scontrol_error: str | None = None
-    if "scontrol" in command_paths:
-        result = command_runner(
-            ["scontrol", "show", "config"],
-            DEFAULT_COMMAND_TIMEOUT_SECONDS,
-        )
-        if result.returncode == 0:
-            scontrol_config_ok = True
-            lowered = result.stdout.lower()
-            scontrol_mentions_gres = "grestypes" in lowered or "gres.conf" in lowered
-        else:
-            scontrol_error = _short_error(result)
-
-    info = SlurmInfo(
-        command_paths=command_paths,
-        config_paths=existing_configs,
-        scontrol_config_ok=scontrol_config_ok,
-        scontrol_config_mentions_gres=scontrol_mentions_gres,
-        scontrol_error=scontrol_error,
-    )
-    if info.has_signal:
-        status: CheckStatus = "ok"
-        pieces: list[str] = []
-        if command_paths:
-            pieces.append("commands=" + ",".join(sorted(command_paths)))
-        if existing_configs:
-            pieces.append(f"config files={len(existing_configs)}")
-        if scontrol_config_ok:
-            pieces.append("scontrol config readable")
-        summary = "; ".join(pieces)
-    else:
-        status = "skipped"
-        summary = "no Slurm commands or config files detected"
-
-    return info, DoctorCheck(
-        id="slurm",
-        name="Slurm command/config signal",
-        status=status,
-        summary=summary,
-        details={
-            "command_paths": command_paths,
-            "config_paths": existing_configs,
-            "scontrol_config_ok": scontrol_config_ok,
-            "scontrol_config_mentions_gres": scontrol_mentions_gres,
-            "scontrol_error": scontrol_error,
-        },
-    )
-
-
-def probe_container_fallback(
-    *,
-    which: Which,
-    command_runner: CommandRunner,
-    path_exists: PathExists,
-    hook_paths: Sequence[str],
-) -> tuple[ContainerFallbackInfo, DoctorCheck]:
-    engine_paths = {
-        name: path for name in ("docker", "podman") if (path := which(name)) is not None
-    }
-    nvidia_command_paths = {
-        name: path
-        for name in ("nvidia-container-runtime", "nvidia-ctk")
-        if (path := which(name)) is not None
-    }
-    existing_hooks = [path for path in hook_paths if path_exists(path)]
-    errors: list[str] = []
-    docker_runtime_signal = False
-    podman_runtime_signal = False
-
-    if "docker" in engine_paths:
-        result = command_runner(
-            ["docker", "info", "--format", "{{json .Runtimes}}"],
-            DEFAULT_COMMAND_TIMEOUT_SECONDS,
-        )
-        if result.returncode == 0:
-            docker_runtime_signal = "nvidia" in result.stdout.lower()
-        elif _looks_like_permission_denied(result):
-            errors.append(f"docker daemon access required: {_short_error(result)}")
-        else:
-            errors.append(f"docker info failed: {_short_error(result)}")
-
-    if "podman" in engine_paths:
-        result = command_runner(
-            ["podman", "info", "--format", "json"],
-            DEFAULT_COMMAND_TIMEOUT_SECONDS,
-        )
-        if result.returncode == 0:
-            lowered = result.stdout.lower()
-            podman_runtime_signal = "nvidia" in lowered or "oci-nvidia-hook" in lowered
-        elif _looks_like_permission_denied(result):
-            errors.append(f"podman access required: {_short_error(result)}")
-        else:
-            errors.append(f"podman info failed: {_short_error(result)}")
-
-    info = ContainerFallbackInfo(
-        engine_paths=engine_paths,
-        nvidia_command_paths=nvidia_command_paths,
-        hook_paths=existing_hooks,
-        docker_runtime_signal=docker_runtime_signal,
-        podman_runtime_signal=podman_runtime_signal,
-        errors=errors,
-    )
-    if info.has_signal:
-        status: CheckStatus = "ok"
-        summary = "NVIDIA container fallback signal detected"
-    elif info.has_access_blocker:
-        status = "warning"
-        summary = "; ".join(error for error in errors if "access required:" in error)
-    elif engine_paths or nvidia_command_paths or existing_hooks:
-        status = "warning"
-        summary = "container tooling detected, but NVIDIA fallback is incomplete"
-    else:
-        status = "skipped"
-        summary = "no Docker/Podman NVIDIA fallback signal detected"
-
-    return info, DoctorCheck(
-        id="container_fallback",
-        name="Docker/Podman NVIDIA fallback",
-        status=status,
-        summary=summary,
-        details={
-            "engine_paths": engine_paths,
-            "nvidia_command_paths": nvidia_command_paths,
-            "hook_paths": existing_hooks,
-            "docker_runtime_signal": docker_runtime_signal,
-            "podman_runtime_signal": podman_runtime_signal,
-            "errors": errors,
-        },
+        details=_database_details(info),
     )
 
 
 def select_runtime_plan(facts: DetectionFacts) -> RuntimePlan:
-    if not facts.os.is_linux:
+    blockers = _unsupported_blockers(facts)
+    warnings = _host_warnings(facts)
+    if blockers:
         return RuntimePlan(
             mode="unsupported",
             telemetry="nvml",
             scheduler="none",
             confidence="high",
-            reasons=[f"{facts.os.system} is not a supported collector host OS."],
-            blockers=["Run gpu-usage-audit on a Linux host or Linux container."],
-        )
-
-    if (
-        facts.nvml.initialized
-        and facts.nvml.device_count is not None
-        and facts.nvml.device_count > 0
-    ):
-        scheduler: SchedulerSource = "slurm" if facts.slurm.has_signal else "none"
-        reasons = [f"Host NVML initialized and sees {facts.nvml.device_count} GPU(s)."]
-        if scheduler == "slurm":
-            reasons.append(
-                "Slurm command/config signal was detected, so scheduler context is Slurm."
-            )
-        else:
-            reasons.append("No Kubernetes or Slurm scheduler signal needs a different runtime.")
-        host_warnings: list[str] = []
-        if facts.kubernetes.inside_cluster:
-            host_warnings.append(
-                "Kubernetes in-cluster environment is present; host runtime means the collector sees the current namespace, not a managed DaemonSet yet."
-            )
-        if not facts.devices.gpu_device_paths:
-            host_warnings.append(
-                "NVML sees GPUs, but /dev/nvidia GPU device files were not listed in this namespace."
-            )
-        return RuntimePlan(
-            mode="host-systemd",
-            telemetry="nvml",
-            scheduler=scheduler,
-            confidence="high",
-            reasons=reasons,
-            warnings=host_warnings,
-            required_privileges=[
-                "permission to read NVML GPU and process state",
-                "permission to run a long-lived host collector",
-                "write access to the collector database path",
-            ],
-            actions=[
-                PlannedAction(
-                    name="host-collector",
-                    summary="Would configure or run the host collector runtime.",
-                    changes_system=True,
-                )
-            ],
-        )
-
-    if facts.kubernetes.has_signal and facts.kubectl.found and facts.kubectl.auth_ok:
-        confidence: PlanConfidence = (
-            "high"
-            if (facts.kubernetes.nvidia_runtime_classes or facts.kubernetes.gpu_capacity_nodes)
-            else "medium"
-        )
-        k8s_warnings: list[str] = []
-        if not facts.kubernetes.nvidia_runtime_classes:
-            k8s_warnings.append(
-                "No NVIDIA RuntimeClass was detected; a DaemonSet may need cluster-specific runtime settings."
-            )
-        return RuntimePlan(
-            mode="k8s-daemonset",
-            telemetry="nvml",
-            scheduler="k8s",
-            confidence=confidence,
             reasons=[
-                "Host NVML did not expose GPUs from this namespace.",
-                "kubectl is available and Kubernetes NVIDIA runtime/GPU node signals were detected.",
+                "This command only audits the local machine, and host readiness is incomplete."
             ],
-            warnings=k8s_warnings,
-            required_privileges=[
-                "kubectl permission to inspect pods, nodes, and runtime classes",
-                "future start permission to create Namespace, ServiceAccount, RBAC, ConfigMap, and DaemonSet resources",
-                "permission to run a node-wide DaemonSet with GPU device access",
-            ],
-            actions=[
-                PlannedAction(
-                    name="k8s-daemonset",
-                    summary="Would render and apply the Kubernetes collector DaemonSet.",
-                    changes_system=True,
-                )
-            ],
+            blockers=blockers,
+            warnings=warnings,
         )
 
-    if facts.container.has_signal:
-        return RuntimePlan(
-            mode="local-container",
-            telemetry="nvml",
-            scheduler="none",
-            confidence="medium",
-            reasons=[
-                "Host NVML did not expose GPUs directly.",
-                "Docker/Podman and NVIDIA container runtime signals were detected.",
-            ],
-            warnings=[
-                "Local container mode is a fallback path and may provide weaker host process attribution."
-            ],
-            required_privileges=[
-                "permission to run Docker or Podman containers with NVIDIA GPU device access",
-                "write access to a host-mounted collector database path",
-            ],
-            actions=[
-                PlannedAction(
-                    name="local-container",
-                    summary="Would run the collector in a local NVIDIA-enabled container.",
-                    changes_system=True,
-                )
-            ],
-        )
-
-    blockers = _unsupported_blockers(facts)
-    reasons = [
-        "No immediately usable host, Kubernetes, or local container runtime path was detected."
-    ]
-    warnings = []
-    if facts.slurm.has_signal:
-        warnings.append(
-            "Slurm was detected, but host NVML must initialize and see GPUs before Slurm audit can run."
-        )
-    if facts.kubernetes.has_signal and (not facts.kubectl.found or not facts.kubectl.auth_ok):
-        warnings.append("Kubernetes signals were detected, but kubectl auth is not ready.")
     return RuntimePlan(
-        mode="unsupported",
+        mode="host",
         telemetry="nvml",
         scheduler="none",
-        confidence="low",
-        reasons=reasons,
-        blockers=blockers,
+        confidence="high",
+        reasons=[
+            f"Local NVML initialized and sees {facts.nvml.device_count} GPU(s).",
+            "`nvidia-smi -L` lists GPUs on this machine.",
+            "The 1.0 workflow writes local NVML samples to a local SQLite database.",
+        ],
         warnings=warnings,
+        required_privileges=[
+            "permission to read NVML GPU and process state",
+            "write access to the collector database path",
+        ],
     )
 
 
 def render_doctor(report: DoctorReport) -> str:
-    lines = ["gua doctor", "", "Detected environment:"]
-    for check in report.checks:
-        lines.append(f"  {check.name}: [{check.status}] {check.summary}")
-    lines.append("")
-    lines.extend(render_runtime_plan(report.plan).splitlines())
-    return "\n".join(lines)
-
-
-def render_runtime_plan(plan: RuntimePlan) -> str:
+    checks = {check.id: check for check in report.checks}
     lines = [
-        "Recommended plan:",
-        f"  runtime: {plan.mode}",
-        f"  telemetry: {plan.telemetry}",
-        f"  scheduler: {plan.scheduler}",
-        f"  confidence: {plan.confidence}",
+        "gua doctor",
+        "",
+        "Scope:",
+        "  machine: local",
+        "",
+        "Host:",
     ]
-    _append_section(lines, "Reasons", plan.reasons)
-    _append_section(lines, "Blockers", plan.blockers)
-    _append_section(lines, "Warnings", plan.warnings)
-    _append_section(lines, "Required privileges", plan.required_privileges)
-    if plan.actions:
-        lines.append("")
-        lines.append("Planned actions:")
-        for action in plan.actions:
-            suffix = " (would change system state)" if action.changes_system else ""
-            lines.append(f"  - {action.name}: {action.summary}{suffix}")
+    _append_check_line(lines, checks["os"])
+    lines.extend(["", "Host GPU:"])
+    _append_check_line(lines, checks["nvidia_devices"])
+    _append_check_line(lines, checks["nvidia_smi"])
+    _append_check_line(lines, checks["nvml"])
+
+    db_check = checks["default_db"]
+    db_path = str(db_check.details.get("path", DEFAULT_DB_PATH))
+    path_label = "default" if db_check.details.get("is_default") is True else "target"
+    if db_check.status == "ok":
+        db_status = db_check.summary
+    else:
+        db_status = f"{db_check.status}, {db_check.summary}"
+    lines.extend(
+        [
+            "",
+            "Database:",
+            f"  {path_label}: {db_path}",
+            f"  status: {db_status}",
+        ]
+    )
+
+    commands = _recommended_commands_for(report)
+    if commands:
+        lines.extend(["", "Recommended commands:"])
+        collect = commands.get("collect")
+        if collect:
+            lines.append(f"  collect: {collect}")
+            lines.append(f"  report after collecting: {commands['report']}")
+        else:
+            lines.append(f"  report existing data: {commands['report']}")
+
+    _append_section(lines, "Fix", _fixes_for(report))
+    _append_section(lines, "Notes", report.plan.warnings)
     return "\n".join(lines)
 
 
 def doctor_report_to_dict(report: DoctorReport) -> dict[str, object]:
-    return {
+    data: dict[str, object] = {
         "schema_version": 1,
         "generated_at": report.generated_at.isoformat(),
+        "scope": {"machine": "local"},
         "read_only": True,
         "no_system_changes": True,
         "checks": [doctor_check_to_dict(check) for check in report.checks],
         "plan": runtime_plan_to_dict(report.plan),
     }
+    if report.plan.mode == "host":
+        data["recommended_commands"] = _recommended_commands_for(report)
+    return data
 
 
 def doctor_check_to_dict(check: DoctorCheck) -> dict[str, object]:
@@ -896,14 +556,8 @@ def runtime_plan_to_dict(plan: RuntimePlan) -> dict[str, object]:
         "blockers": plan.blockers,
         "warnings": plan.warnings,
         "required_privileges": plan.required_privileges,
-        "actions": [
-            {
-                "name": action.name,
-                "summary": action.summary,
-                "changes_system": action.changes_system,
-            }
-            for action in plan.actions
-        ],
+        # schema_version=1 호환을 위해 RuntimePlan 모델 필드 없이 빈 리스트를 유지한다.
+        "actions": [],
     }
 
 
@@ -915,13 +569,62 @@ def _timeout_text(value: str | bytes | None) -> str:
     return value
 
 
-def _path_exists(path: str) -> bool:
-    return Path(path).exists()
-
-
 def _is_nvidia_gpu_device(path: str) -> bool:
     name = Path(path).name
     return name.startswith("nvidia") and name.removeprefix("nvidia").isdigit()
+
+
+def _nvidia_smi_list_lines(stdout: str) -> tuple[list[str], list[str]]:
+    gpu_lines: list[str] = []
+    mig_lines: list[str] = []
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("GPU "):
+            gpu_lines.append(stripped)
+        elif stripped.startswith("MIG "):
+            mig_lines.append(stripped)
+    return gpu_lines, mig_lines
+
+
+def _nvidia_smi_summary(gpu_lines: Sequence[str], mig_lines: Sequence[str]) -> str:
+    parts: list[str] = []
+    if gpu_lines:
+        suffix = "" if len(gpu_lines) == 1 else "s"
+        parts.append(f"{len(gpu_lines)} GPU{suffix}")
+    if mig_lines:
+        suffix = "" if len(mig_lines) == 1 else "s"
+        parts.append(f"{len(mig_lines)} MIG instance{suffix}")
+    return ", ".join(parts)
+
+
+def _recommended_commands_for(report: DoctorReport) -> dict[str, str]:
+    if report.plan.mode != "host":
+        return {}
+
+    checks = {check.id: check for check in report.checks}
+    database = checks["default_db"].details
+    db_path = str(database.get("path", DEFAULT_DB_PATH))
+    report_command = _report_command(db_path)
+    if database.get("exists") is True:
+        return {"report": report_command}
+    if database.get("parent_writable") is False:
+        return {}
+    return {
+        "collect": _collect_command(db_path),
+        "report": report_command,
+    }
+
+
+def _collect_command(db_path: str) -> str:
+    if Path(db_path) == DEFAULT_DB_PATH:
+        return COLLECT_COMMAND
+    return f"gpu-usage-audit daemon --db {shlex.quote(db_path)} --interval 30s"
+
+
+def _report_command(db_path: str) -> str:
+    if Path(db_path) == DEFAULT_DB_PATH:
+        return REPORT_COMMAND
+    return f"gpu-usage-audit report --db {shlex.quote(db_path)} --since 1h --interval 30s"
 
 
 def _short_error(result: CommandResult) -> str:
@@ -933,115 +636,66 @@ def _short_error(result: CommandResult) -> str:
     return text
 
 
-def _looks_like_permission_denied(result: CommandResult) -> bool:
-    text = f"{result.stderr}\n{result.stdout}".lower()
-    permission_markers = (
-        "permission denied",
-        "access denied",
-        "got permission denied",
-        "cannot connect to the docker daemon",
-        "is the docker daemon running",
-        "connect: permission denied",
-    )
-    return any(marker in text for marker in permission_markers)
-
-
-def _json_items(stdout: str) -> list[dict[str, Any]]:
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, dict):
-        return []
-    items = data.get("items")
-    if not isinstance(items, list):
-        return []
-    dict_items: list[dict[str, Any]] = []
-    for item in items:
-        if isinstance(item, dict):
-            dict_items.append(item)
-    return dict_items
-
-
-def _parse_nvidia_runtime_classes(stdout: str) -> list[str]:
-    names: list[str] = []
-    for item in _json_items(stdout):
-        name = _metadata_name(item)
-        if name and "nvidia" in name.lower():
-            names.append(name)
-    return sorted(names)
-
-
-def _parse_gpu_node_signals(stdout: str) -> tuple[list[str], list[str]]:
-    capacity_nodes: list[str] = []
-    label_nodes: list[str] = []
-    for item in _json_items(stdout):
-        name = _metadata_name(item) or "unknown"
-        status = item.get("status")
-        if isinstance(status, dict):
-            capacity = status.get("capacity")
-            if isinstance(capacity, dict) and _positive_quantity(capacity.get("nvidia.com/gpu")):
-                capacity_nodes.append(name)
-        metadata = item.get("metadata")
-        if isinstance(metadata, dict):
-            labels = metadata.get("labels")
-            if isinstance(labels, dict) and _has_gpu_node_label(labels):
-                label_nodes.append(name)
-    return sorted(capacity_nodes), sorted(label_nodes)
-
-
-def _metadata_name(item: Mapping[str, Any]) -> str | None:
-    metadata = item.get("metadata")
-    if not isinstance(metadata, dict):
-        return None
-    name = metadata.get("name")
-    return name if isinstance(name, str) else None
-
-
-def _positive_quantity(value: object) -> bool:
-    if isinstance(value, int):
-        return value > 0
-    if not isinstance(value, str):
-        return False
-    try:
-        return int(value) > 0
-    except ValueError:
-        return False
-
-
-def _has_gpu_node_label(labels: Mapping[object, object]) -> bool:
-    gpu_labels = {
-        "nvidia.com/gpu.present",
-        "feature.node.kubernetes.io/pci-10de.present",
-    }
-    for key, value in labels.items():
-        if not isinstance(key, str) or key not in gpu_labels:
-            continue
-        if isinstance(value, str):
-            if value.lower() in {"true", "1", "yes"}:
-                return True
-        elif value is True:
-            return True
-    return False
-
-
 def _unsupported_blockers(facts: DetectionFacts) -> list[str]:
     blockers: list[str] = []
+    if not facts.os.is_linux:
+        blockers.append(f"{facts.os.system} is not a supported collector host OS.")
     if not facts.devices.paths:
-        blockers.append("No /dev/nvidia* device files were found.")
+        blockers.append("No /dev/nvidia* device files were found on this machine.")
+    elif not facts.devices.gpu_device_paths:
+        blockers.append("No /dev/nvidiaN GPU device files were found on this machine.")
+    if not facts.nvidia_smi.found:
+        blockers.append("nvidia-smi is not installed or not on PATH.")
+    elif facts.nvidia_smi.timed_out:
+        blockers.append("`nvidia-smi -L` timed out.")
+    elif facts.nvidia_smi.returncode != 0:
+        blockers.append(f"`nvidia-smi -L` failed: {_one_line(facts.nvidia_smi.stderr)}")
+    elif not facts.nvidia_smi.gpu_lines and not facts.nvidia_smi.mig_lines:
+        blockers.append("`nvidia-smi -L` returned no GPUs.")
     if not facts.nvml.loadable:
         blockers.append(f"NVML could not be loaded: {_one_line(facts.nvml.error)}")
     elif not facts.nvml.initialized:
         blockers.append(f"NVML could not be initialized: {_one_line(facts.nvml.error)}")
     elif facts.nvml.device_count == 0:
         blockers.append("NVML initialized but reported zero GPUs.")
-    if not facts.kubectl.found:
-        blockers.append("kubectl is not installed or not on PATH.")
-    elif facts.kubernetes.has_signal and not facts.kubectl.auth_ok:
-        blockers.append("kubectl auth is not ready for Kubernetes inspection.")
-    if not facts.container.has_signal:
-        blockers.append("No Docker/Podman NVIDIA fallback was detected.")
+    if facts.database.exists and not facts.database.is_file:
+        blockers.append(f"{facts.database.path} exists but is not a regular file.")
+    elif not facts.database.exists and not facts.database.parent_exists:
+        blockers.append(f"The parent directory for {facts.database.path} does not exist.")
     return blockers
+
+
+def _host_warnings(facts: DetectionFacts) -> list[str]:
+    warnings: list[str] = []
+    if facts.database.exists and facts.database.is_file:
+        warnings.append(
+            f"{facts.database.path} already exists; `gpu-usage-audit daemon` will refuse "
+            "this path until it is removed or another --db path is provided."
+        )
+    elif (
+        not facts.database.exists
+        and facts.database.parent_exists
+        and not facts.database.parent_writable
+    ):
+        warnings.append(
+            f"The parent directory for {facts.database.path} may not be writable by this user."
+        )
+    return warnings
+
+
+def _fixes_for(report: DoctorReport) -> list[str]:
+    checks = {check.id: check for check in report.checks}
+    fixes: list[str] = []
+    if report.plan.blockers:
+        fixes.extend(report.plan.blockers)
+    nvml = checks["nvml"].details
+    if nvml.get("loadable") is False:
+        fixes.append("uv tool install --force --with nvidia-ml-py gpu-usage-audit")
+    return fixes
+
+
+def _append_check_line(lines: list[str], check: DoctorCheck) -> None:
+    lines.append(f"  {check.name}: {check.status}, {check.summary}")
 
 
 def _append_section(lines: list[str], title: str, values: Sequence[str]) -> None:
@@ -1051,6 +705,19 @@ def _append_section(lines: list[str], title: str, values: Sequence[str]) -> None
     lines.append(f"{title}:")
     for value in values:
         lines.append(f"  - {value}")
+
+
+def _database_details(info: DatabaseInfo) -> dict[str, object]:
+    return {
+        "path": info.path,
+        "is_default": info.is_default,
+        "exists": info.exists,
+        "is_file": info.is_file,
+        "parent_exists": info.parent_exists,
+        "parent_writable": info.parent_writable,
+        "size_bytes": info.size_bytes,
+        "error": info.error,
+    }
 
 
 def _one_line(value: str | None) -> str:
