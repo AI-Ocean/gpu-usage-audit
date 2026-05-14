@@ -10,10 +10,29 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** v0.3.0 — `daemon` runs on a real NVIDIA host, `demo` runs
-> anywhere (no GPU required), `report` reads either. The Go v0.1.0
+> **Status:** v0.4.0 — `gua` exposes the new auto-runtime command surface
+> as safe placeholders. `daemon` still runs on a real NVIDIA host, `demo`
+> runs anywhere (no GPU required), and `report` reads either. The Go v0.1.0
 > implementation remains downloadable at tag `v0.1.0` / branch
 > [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
+
+## Download
+
+Each `v*` tag builds a source distribution and wheel, then attaches both
+to the GitHub Release. The wheel has no core runtime dependencies.
+
+```sh
+WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0/gpu_usage_audit-0.4.0-py3-none-any.whl"
+
+uvx --from "$WHEEL" gua doctor
+uvx --from "$WHEEL" gua start --dry-run
+uvx --from "$WHEEL" gpu-usage-audit demo
+```
+
+In v0.4.0 the `gua` commands are intentionally read-only placeholders:
+they print what is not implemented yet and make no system, service,
+cluster, or database changes. Use `gpu-usage-audit daemon/report/demo`
+for the existing compatibility workflow.
 
 ## What you get
 
@@ -57,7 +76,7 @@ The `demo` subcommand records 30 ticks of fake telemetry and prints the
 report — all in one process, no second shell needed.
 
 ```sh
-WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.3.0/gpu_usage_audit-0.3.0-py3-none-any.whl"
+WHEEL="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0/gpu_usage_audit-0.4.0-py3-none-any.whl"
 
 uvx --from "$WHEEL" gpu-usage-audit demo
 ```
@@ -208,9 +227,10 @@ uv run mypy                      # type-check (strict)
 uv run gpu-usage-audit demo      # see the report shape locally
 ```
 
-CI runs ruff + mypy + pytest on every push and PR. Tag pushes (`v*`)
-build sdist + wheel and create a GitHub Release with auto-generated
-notes.
+CI runs ruff + format check + mypy + pytest, then builds and smoke-tests
+the wheel on every push and PR. Tag pushes (`v*`) rerun the same checks,
+build sdist + wheel, smoke-test the wheel, and create a GitHub Release
+with auto-generated notes.
 
 ## Non-goals
 

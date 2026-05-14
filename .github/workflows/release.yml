@@ -25,8 +25,26 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-groups --locked
 
+      - name: ruff check
+        run: uv run ruff check
+
+      - name: ruff format --check
+        run: uv run ruff format --check
+
+      - name: mypy
+        run: uv run mypy
+
+      - name: pytest
+        run: uv run pytest -v
+
+      - name: Validate tag version
+        run: uv run python -c "import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']; tag = os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert version == tag, f'pyproject version {version} != tag {tag}'"
+
       - name: Build sdist + wheel
         run: uv build
+
+      - name: Smoke built wheel
+        run: bash scripts/smoke-dist-wheel.sh
 
       - name: Upload dist
         uses: actions/upload-artifact@v4
