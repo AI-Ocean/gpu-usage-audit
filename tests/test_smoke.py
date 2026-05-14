@@ -6,16 +6,19 @@ entry point + argparse 구조 + duration 파서가 *살아있는지* 만 짚는�
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tomllib
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from gpu_usage_audit import __version__
 from gpu_usage_audit.__main__ import _duration, build_gua_parser, build_parser, gua_main, main
+from gpu_usage_audit.doctor import DoctorCheck, DoctorReport
+from gpu_usage_audit.model import RuntimePlan
 
 
 def test_version_string_is_nonempty() -> None:
@@ -44,6 +47,10 @@ def test_gua_parser_registers_command_surface() -> None:
     for cmd in ("doctor", "status", "report", "stop", "uninstall"):
         ns = p.parse_args([cmd])
         assert ns.command == cmd
+
+    ns = p.parse_args(["doctor", "--json"])
+    assert ns.command == "doctor"
+    assert ns.json is True
 
     ns = p.parse_args(["start", "--dry-run"])
     assert ns.command == "start"
@@ -79,8 +86,6 @@ def test_main_no_args_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
 @pytest.mark.parametrize(
     ("argv", "want"),
     [
-        (["doctor"], "runtime detection is not implemented yet"),
-        (["start", "--dry-run"], "runtime planning is not implemented yet"),
         (["status"], "install-state tracking is not implemented yet"),
         (["report"], "gpu-usage-audit report --db PATH"),
         (["stop"], "runtime management is not implemented yet"),
@@ -99,6 +104,53 @@ def test_gua_placeholder_commands_do_not_change_state(
     assert "No system, service, cluster, or database changes were made." in captured.out
 
 
+def test_gua_doctor_prints_runtime_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("gpu_usage_audit.__main__.build_doctor_report", _fake_doctor_report)
+
+    rc = gua_main(["doctor"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Detected environment:" in captured.out
+    assert "Recommended plan:" in captured.out
+    assert "runtime: host-systemd" in captured.out
+    assert "No system, service, cluster, or database changes were made." in captured.out
+
+
+def test_gua_doctor_json_prints_machine_readable_report(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("gpu_usage_audit.__main__.build_doctor_report", _fake_doctor_report)
+
+    rc = gua_main(["doctor", "--json"])
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert rc == 0
+    assert data["read_only"] is True
+    assert data["no_system_changes"] is True
+    assert data["plan"]["mode"] == "host-systemd"
+    assert "No system" not in captured.out
+
+
+def test_gua_start_dry_run_prints_recommended_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("gpu_usage_audit.__main__.build_doctor_report", _fake_doctor_report)
+
+    rc = gua_main(["start", "--dry-run"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "gua start --dry-run" in captured.out
+    assert "Recommended plan:" in captured.out
+    assert "runtime: host-systemd" in captured.out
+    assert "Collector start/stop is not implemented yet" in captured.out
+    assert "No system, service, cluster, or database changes were made." in captured.out
+
+
 def test_gua_start_without_dry_run_is_unsupported(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -107,6 +159,27 @@ def test_gua_start_without_dry_run_is_unsupported(
     assert rc == 2
     assert "gua start --dry-run" in captured.err
     assert "No system, service, cluster, or database changes were made." in captured.err
+
+
+def _fake_doctor_report() -> DoctorReport:
+    return DoctorReport(
+        generated_at=datetime(2026, 5, 14, 0, 0, tzinfo=UTC),
+        checks=[
+            DoctorCheck(
+                id="nvml",
+                name="host NVML",
+                status="ok",
+                summary="initialized, GPU count=2",
+            )
+        ],
+        plan=RuntimePlan(
+            mode="host-systemd",
+            telemetry="nvml",
+            scheduler="none",
+            confidence="high",
+            reasons=["Host NVML initialized and sees 2 GPU(s)."],
+        ),
+    )
 
 
 def test_cli_entry_point_runs_in_subprocess() -> None:
