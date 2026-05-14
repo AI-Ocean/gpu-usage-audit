@@ -694,8 +694,22 @@ def _fixes_for(report: DoctorReport) -> list[str]:
     fixes: list[str] = []
     if checks["nvidia_devices"].status == "error":
         fixes.append("Run on an NVIDIA host where /dev/nvidia* device files are visible.")
-    if checks["nvidia_smi"].status == "error":
-        fixes.append("Install NVIDIA driver utilities so `nvidia-smi -L` lists this host's GPUs.")
+    smi = checks["nvidia_smi"]
+    if smi.status == "error":
+        if smi.details.get("timed_out") is True:
+            fixes.append(
+                "Investigate the `nvidia-smi -L` timeout; repair the hung driver/kernel "
+                "state and rerun doctor."
+            )
+        elif smi.details.get("found") is False:
+            fixes.append(
+                "Install NVIDIA driver utilities so `nvidia-smi -L` is on PATH and lists "
+                "this host's GPUs."
+            )
+        else:
+            fixes.append(
+                "Repair NVIDIA driver utilities so `nvidia-smi -L` lists this host's GPUs."
+            )
     nvml = checks["nvml"].details
     if nvml.get("loadable") is False:
         fixes.append("Reinstall the tool environment: uv tool install --force gpu-usage-audit")
@@ -703,6 +717,11 @@ def _fixes_for(report: DoctorReport) -> list[str]:
         fixes.append(
             "Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available "
             "and matches the loaded kernel driver; verify with `nvidia-smi -L`."
+        )
+    elif nvml.get("device_count") == 0:
+        fixes.append(
+            "NVML reports zero GPUs; verify that this user can see GPU devices and that "
+            "`nvidia-smi -L` lists the same host GPUs."
         )
     database = checks["default_db"]
     if database.status == "error":

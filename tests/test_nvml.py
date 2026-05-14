@@ -188,8 +188,8 @@ def test_probe_translates_nvml_error_to_friendly(monkeypatch: pytest.MonkeyPatch
         (12, "localized message", "libnvidia-ml.so.1 was not found"),
         (19, "localized message", "versions do not match"),
         (9, "localized message", "driver is not loaded"),
-        (999, "NVML Shared Library Not Found", "libnvidia-ml.so.1 was not found"),
-        (999, "other failure", "driver or NVML initialization failed"),
+        (-1, "NVML Shared Library Not Found", "libnvidia-ml.so.1 was not found"),
+        (-1, "other failure", "driver or NVML initialization failed"),
     ],
 )
 def test_nvml_init_error_message_classifies_common_failures(

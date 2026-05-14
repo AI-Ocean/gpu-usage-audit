@@ -87,6 +87,13 @@ def nvmlInit():
 PY
 
 fake_nvml_json="$tmpdir/fake-nvml-doctor.json"
+fake_nvml_text="$tmpdir/fake-nvml-doctor.txt"
+PYTHONPATH="$tmpdir/fake-pynvml" "$tmpdir/venv/bin/gua" doctor >"$fake_nvml_text"
+grep -q "Install or repair the NVIDIA driver" "$fake_nvml_text" || {
+  printf 'fake NVML text output is missing driver repair fix\n' >&2
+  exit 1
+}
+
 PYTHONPATH="$tmpdir/fake-pynvml" "$tmpdir/venv/bin/gua" doctor --json >"$fake_nvml_json"
 "$tmpdir/venv/bin/python" - "$fake_nvml_json" <<'PY'
 import json
