@@ -146,6 +146,131 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_NO_SYSTEM_CHANGES = "No system, service, cluster, or database changes were made."
+
+
+def build_gua_parser() -> argparse.ArgumentParser:
+    """새 auto-runtime command surface skeleton 구성.
+
+    기존 `gpu-usage-audit daemon/report/demo` 경로는 compatibility CLI 로
+    유지하고, `gua` 는 auto-runtime workflow 를 위한 새 표면으로 둔다.
+    """
+    parser = argparse.ArgumentParser(
+        prog="gua",
+        description="Auto-runtime command surface for gpu-usage-audit.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Use "gua <command> -h" for command-specific flags.',
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Inspect the host and recommend a runtime plan (placeholder)",
+    )
+    p_doctor.set_defaults(func=_cmd_gua_doctor)
+
+    p_start = sub.add_parser(
+        "start",
+        help="Start a managed collector runtime (dry-run skeleton only)",
+    )
+    p_start.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the placeholder start path without changing system state",
+    )
+    p_start.set_defaults(func=_cmd_gua_start)
+
+    p_status = sub.add_parser(
+        "status",
+        help="Show managed runtime status (placeholder)",
+    )
+    p_status.set_defaults(func=_cmd_gua_status)
+
+    p_report = sub.add_parser(
+        "report",
+        help="Show a state-aware audit report (placeholder)",
+    )
+    p_report.set_defaults(func=_cmd_gua_report)
+
+    p_stop = sub.add_parser(
+        "stop",
+        help="Stop a managed collector runtime (placeholder)",
+    )
+    p_stop.set_defaults(func=_cmd_gua_stop)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Remove managed runtime artifacts (placeholder)",
+    )
+    p_uninstall.set_defaults(func=_cmd_gua_uninstall)
+
+    return parser
+
+
+def _print_gua_placeholder(command: str, detail: str) -> int:
+    """미구현 `gua` command 의 no-op placeholder 출력."""
+    print(f"gua {command}: {detail}")
+    print(_NO_SYSTEM_CHANGES)
+    return 0
+
+
+def _cmd_gua_doctor(args: argparse.Namespace) -> int:
+    """doctor read-only detection 이 붙기 전의 placeholder."""
+    return _print_gua_placeholder(
+        args.command,
+        "runtime detection is not implemented yet; this skeleton ran no checks.",
+    )
+
+
+def _cmd_gua_start(args: argparse.Namespace) -> int:
+    """managed runtime start 구현 전의 dry-run 전용 placeholder."""
+    if not args.dry_run:
+        print(
+            "gua start: only `gua start --dry-run` is available in this skeleton.", file=sys.stderr
+        )
+        print(_NO_SYSTEM_CHANGES, file=sys.stderr)
+        return 2
+    return _print_gua_placeholder(
+        args.command,
+        "runtime planning is not implemented yet; --dry-run applied no start plan.",
+    )
+
+
+def _cmd_gua_status(args: argparse.Namespace) -> int:
+    """install-state 기반 status 구현 전의 placeholder."""
+    return _print_gua_placeholder(
+        args.command,
+        "install-state tracking is not implemented yet; no managed runtime is known.",
+    )
+
+
+def _cmd_gua_report(args: argparse.Namespace) -> int:
+    """install-state 기반 report 구현 전의 compatibility 안내 placeholder."""
+    # TODO(PR 6): state-aware `gua report` 구현 시 compat CLI 안내 문구 갱신.
+    return _print_gua_placeholder(
+        args.command,
+        "state-aware reporting is not implemented yet; use `gpu-usage-audit report --db PATH`.",
+    )
+
+
+def _cmd_gua_stop(args: argparse.Namespace) -> int:
+    """managed runtime stop 구현 전의 placeholder."""
+    return _print_gua_placeholder(
+        args.command,
+        "runtime management is not implemented yet; no managed runtime was stopped.",
+    )
+
+
+def _cmd_gua_uninstall(args: argparse.Namespace) -> int:
+    """managed runtime cleanup 구현 전의 placeholder."""
+    return _print_gua_placeholder(
+        args.command,
+        "runtime cleanup is not implemented yet; no files or runtime artifacts were removed.",
+    )
+
+
 def _cmd_daemon(args: argparse.Namespace) -> int:
     """실 NVML 데몬 — 운영용."""
     conn = open_db(args.db)
@@ -274,6 +399,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "help":
         parser.print_help()
         return 0
+    if hasattr(args, "func"):
+        result: int = args.func(args)
+        return result
+
+    parser.print_help(sys.stderr)
+    return 2
+
+
+def gua_main(argv: list[str] | None = None) -> int:
+    """새 `gua` command surface entry point."""
+    parser = build_gua_parser()
+    args = parser.parse_args(argv)
+
     if hasattr(args, "func"):
         result: int = args.func(args)
         return result

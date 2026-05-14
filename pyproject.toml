@@ -28,6 +28,7 @@ nvml = ["nvidia-ml-py>=12.535"]
 [project.scripts]
 # pip / uvx 가 만들 entry point. `uvx gpu-usage-audit ...` 한 줄로 실행.
 gpu-usage-audit = "gpu_usage_audit.__main__:main"
+gua = "gpu_usage_audit.__main__:gua_main"
 
 [project.urls]
 Homepage = "https://github.com/AI-Ocean/gpu-usage-audit"

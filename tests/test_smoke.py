@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from gpu_usage_audit import __version__
-from gpu_usage_audit.__main__ import _duration, build_parser, main
+from gpu_usage_audit.__main__ import _duration, build_gua_parser, build_parser, gua_main, main
 
 
 def test_version_string_is_nonempty() -> None:
@@ -28,6 +29,25 @@ def test_parser_registers_subcommands() -> None:
     for cmd in ("daemon", "report", "demo", "version", "help"):
         ns = p.parse_args([cmd, *_required_args_for(cmd)])
         assert ns.command == cmd
+
+
+def test_pyproject_registers_gua_entry_point() -> None:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject.open("rb") as f:
+        scripts = tomllib.load(f)["project"]["scripts"]
+    assert scripts["gpu-usage-audit"] == "gpu_usage_audit.__main__:main"
+    assert scripts["gua"] == "gpu_usage_audit.__main__:gua_main"
+
+
+def test_gua_parser_registers_command_surface() -> None:
+    p = build_gua_parser()
+    for cmd in ("doctor", "status", "report", "stop", "uninstall"):
+        ns = p.parse_args([cmd])
+        assert ns.command == cmd
+
+    ns = p.parse_args(["start", "--dry-run"])
+    assert ns.command == "start"
+    assert ns.dry_run is True
 
 
 def _required_args_for(cmd: str) -> list[str]:
@@ -54,6 +74,39 @@ def test_main_no_args_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
     rc = main([])
     assert rc == 2
     assert "usage:" in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize(
+    ("argv", "want"),
+    [
+        (["doctor"], "runtime detection is not implemented yet"),
+        (["start", "--dry-run"], "runtime planning is not implemented yet"),
+        (["status"], "install-state tracking is not implemented yet"),
+        (["report"], "gpu-usage-audit report --db PATH"),
+        (["stop"], "runtime management is not implemented yet"),
+        (["uninstall"], "runtime cleanup is not implemented yet"),
+    ],
+)
+def test_gua_placeholder_commands_do_not_change_state(
+    argv: list[str],
+    want: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = gua_main(argv)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert want in captured.out
+    assert "No system, service, cluster, or database changes were made." in captured.out
+
+
+def test_gua_start_without_dry_run_is_unsupported(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = gua_main(["start"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "gua start --dry-run" in captured.err
+    assert "No system, service, cluster, or database changes were made." in captured.err
 
 
 def test_cli_entry_point_runs_in_subprocess() -> None:
