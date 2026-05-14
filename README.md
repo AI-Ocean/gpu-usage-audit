@@ -34,6 +34,20 @@ they print what is not implemented yet and make no system, service,
 cluster, or database changes. Use `gpu-usage-audit daemon/report/demo`
 for the existing compatibility workflow.
 
+Available `gua` subcommands in v0.4.0: `doctor`, `start`, `status`,
+`report`, `stop`, and `uninstall`.
+
+Optional checksum verification:
+
+```sh
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.0"
+
+curl -fsSLO "$BASE/gpu_usage_audit-0.4.0-py3-none-any.whl"
+curl -fsSLO "$BASE/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing
+uvx --from ./gpu_usage_audit-0.4.0-py3-none-any.whl gua doctor
+```
+
 ## What you get
 
 ```

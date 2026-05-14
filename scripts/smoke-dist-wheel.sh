@@ -11,6 +11,9 @@ if [[ -z "$wheel" ]]; then
   fi
   wheel="${wheels[0]}"
 fi
+wheel_name="$(basename "$wheel")"
+expected_version="${wheel_name#gpu_usage_audit-}"
+expected_version="${expected_version%%-*}"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -27,9 +30,20 @@ if [[ -z "$python_bin" ]]; then
 fi
 
 "$python_bin" -m venv "$tmpdir/venv"
-"$tmpdir/venv/bin/python" -m pip install "$wheel"
+"$tmpdir/venv/bin/python" -m pip install --no-deps --no-index "$wheel"
 
-"$tmpdir/venv/bin/gpu-usage-audit" version
-"$tmpdir/venv/bin/gua" --version
+actual_version="$("$tmpdir/venv/bin/gpu-usage-audit" version)"
+if [[ "$actual_version" != "$expected_version" ]]; then
+  printf 'gpu-usage-audit version %s != wheel version %s\n' \
+    "$actual_version" "$expected_version" >&2
+  exit 1
+fi
+
+gua_version="$("$tmpdir/venv/bin/gua" --version)"
+if [[ "$gua_version" != "$expected_version" ]]; then
+  printf 'gua version %s != wheel version %s\n' "$gua_version" "$expected_version" >&2
+  exit 1
+fi
+
 "$tmpdir/venv/bin/gua" doctor
 "$tmpdir/venv/bin/gua" start --dry-run
