@@ -37,3 +37,9 @@ jobs:
 
       - name: pytest
         run: uv run pytest -v
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Smoke built wheel
+        run: bash scripts/smoke-dist-wheel.sh

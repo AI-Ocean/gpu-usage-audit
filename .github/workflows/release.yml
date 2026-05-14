@@ -25,8 +25,29 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-groups --locked
 
+      - name: ruff check
+        run: uv run ruff check
+
+      - name: ruff format --check
+        run: uv run ruff format --check
+
+      - name: mypy
+        run: uv run mypy
+
+      - name: pytest
+        run: uv run pytest -v
+
+      - name: Validate tag version
+        run: uv run python scripts/check-tag-version.py
+
       - name: Build sdist + wheel
         run: uv build
+
+      - name: Smoke built wheel
+        run: bash scripts/smoke-dist-wheel.sh
+
+      - name: Generate checksums
+        run: cd dist && sha256sum *.whl *.tar.gz > SHA256SUMS
 
       - name: Upload dist
         uses: actions/upload-artifact@v4
@@ -34,7 +55,7 @@ jobs:
           name: dist
           path: dist/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
   release:
     needs: build
@@ -90,10 +111,14 @@ jobs:
           case "$TAG" in
             *a*|*b*|*rc*) PRERELEASE_FLAG="--prerelease" ;;
           esac
-          gh release create "$TAG" $PRERELEASE_FLAG \
-            --title "$TAG" \
-            --notes-file release_notes.md \
-            dist/*
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$TAG" $PRERELEASE_FLAG \
+              --title "$TAG" \
+              --notes-file release_notes.md \
+              dist/*.whl dist/*.tar.gz dist/SHA256SUMS
+          fi
 
   # PyPI publish — 사용자가 PyPI 측에 trusted publisher 등록한 뒤 활성화.
   # https://docs.pypi.org/trusted-publishers/
