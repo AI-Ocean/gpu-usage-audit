@@ -54,6 +54,7 @@ _DURATION_UNITS = {
     "h": "hours",
     "d": "days",
 }
+_NO_SYSTEM_CHANGES = "No system, service, cluster, or database changes were made."
 
 
 def _duration(s: str) -> timedelta:
@@ -144,6 +145,118 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("help", help="Show this message")
 
     return parser
+
+
+def build_gua_parser() -> argparse.ArgumentParser:
+    """New auto-runtime command surface skeleton.
+
+    The existing `gpu-usage-audit daemon/report/demo` path remains the
+    compatibility CLI while `gua` grows the auto-runtime workflow.
+    """
+    parser = argparse.ArgumentParser(
+        prog="gua",
+        description="Auto-runtime command surface for gpu-usage-audit.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Use "gua <command> -h" for command-specific flags.',
+    )
+    parser.add_argument("--version", action="version", version=__version__)
+
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Inspect the host and recommend a runtime plan (placeholder)",
+    )
+    p_doctor.set_defaults(func=_cmd_gua_doctor)
+
+    p_start = sub.add_parser(
+        "start",
+        help="Start a managed collector runtime (dry-run skeleton only)",
+    )
+    p_start.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the placeholder start path without changing system state",
+    )
+    p_start.set_defaults(func=_cmd_gua_start)
+
+    p_status = sub.add_parser(
+        "status",
+        help="Show managed runtime status (placeholder)",
+    )
+    p_status.set_defaults(func=_cmd_gua_status)
+
+    p_report = sub.add_parser(
+        "report",
+        help="Show a state-aware audit report (placeholder)",
+    )
+    p_report.set_defaults(func=_cmd_gua_report)
+
+    p_stop = sub.add_parser(
+        "stop",
+        help="Stop a managed collector runtime (placeholder)",
+    )
+    p_stop.set_defaults(func=_cmd_gua_stop)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Remove managed runtime artifacts (placeholder)",
+    )
+    p_uninstall.set_defaults(func=_cmd_gua_uninstall)
+
+    return parser
+
+
+def _print_gua_placeholder(command: str, detail: str) -> int:
+    print(f"gua {command}: {detail}")
+    print(_NO_SYSTEM_CHANGES)
+    return 0
+
+
+def _cmd_gua_doctor(args: argparse.Namespace) -> int:
+    return _print_gua_placeholder(
+        args.command,
+        "runtime detection is not implemented yet; this skeleton ran no checks.",
+    )
+
+
+def _cmd_gua_start(args: argparse.Namespace) -> int:
+    if not args.dry_run:
+        print("gua start: only `gua start --dry-run` is available in this skeleton.", file=sys.stderr)
+        print(_NO_SYSTEM_CHANGES, file=sys.stderr)
+        return 2
+    return _print_gua_placeholder(
+        "start --dry-run",
+        "runtime planning is not implemented yet; no start plan was applied.",
+    )
+
+
+def _cmd_gua_status(args: argparse.Namespace) -> int:
+    return _print_gua_placeholder(
+        args.command,
+        "install-state tracking is not implemented yet; no managed runtime is known.",
+    )
+
+
+def _cmd_gua_report(args: argparse.Namespace) -> int:
+    return _print_gua_placeholder(
+        args.command,
+        "state-aware reporting is not implemented yet; use `gpu-usage-audit report --db PATH`.",
+    )
+
+
+def _cmd_gua_stop(args: argparse.Namespace) -> int:
+    return _print_gua_placeholder(
+        args.command,
+        "runtime management is not implemented yet; no managed runtime was stopped.",
+    )
+
+
+def _cmd_gua_uninstall(args: argparse.Namespace) -> int:
+    return _print_gua_placeholder(
+        args.command,
+        "runtime cleanup is not implemented yet; no files or runtime artifacts were removed.",
+    )
 
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
@@ -274,6 +387,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "help":
         parser.print_help()
         return 0
+    if hasattr(args, "func"):
+        result: int = args.func(args)
+        return result
+
+    parser.print_help(sys.stderr)
+    return 2
+
+
+def gua_main(argv: list[str] | None = None) -> int:
+    """Entry point for the new `gua` command surface."""
+    parser = build_gua_parser()
+    args = parser.parse_args(argv)
+
     if hasattr(args, "func"):
         result: int = args.func(args)
         return result
