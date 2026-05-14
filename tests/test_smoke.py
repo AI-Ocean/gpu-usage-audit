@@ -16,7 +16,14 @@ from pathlib import Path
 import pytest
 
 from gpu_usage_audit import __version__
-from gpu_usage_audit.__main__ import _duration, build_gua_parser, build_parser, gua_main, main
+from gpu_usage_audit.__main__ import (
+    DEFAULT_DB_PATH,
+    _duration,
+    build_gua_parser,
+    build_parser,
+    gua_main,
+    main,
+)
 from gpu_usage_audit.doctor import DoctorCheck, DoctorReport
 from gpu_usage_audit.model import RuntimePlan
 
@@ -32,6 +39,12 @@ def test_parser_registers_subcommands() -> None:
     for cmd in ("daemon", "report", "demo", "version", "help"):
         ns = p.parse_args([cmd, *_required_args_for(cmd)])
         assert ns.command == cmd
+
+
+def test_daemon_and_report_default_to_tmp_gua_db() -> None:
+    p = build_parser()
+    assert p.parse_args(["daemon"]).db == str(DEFAULT_DB_PATH)
+    assert p.parse_args(["report"]).db == str(DEFAULT_DB_PATH)
 
 
 def test_pyproject_registers_gua_entry_point() -> None:
@@ -58,9 +71,7 @@ def test_gua_parser_registers_command_surface() -> None:
 
 
 def _required_args_for(cmd: str) -> list[str]:
-    # daemon/report 는 --db 필수. demo 는 --db 옵셔널. version/help 는 추가 인자 없음.
-    if cmd in ("daemon", "report"):
-        return ["--db", "/tmp/dummy.db"]
+    # daemon/report/demo 는 --db 옵셔널. version/help 는 추가 인자 없음.
     return []
 
 
@@ -159,6 +170,32 @@ def test_gua_start_without_dry_run_is_unsupported(
     assert rc == 2
     assert "gua start --dry-run" in captured.err
     assert "No system, service, cluster, or database changes were made." in captured.err
+
+
+def test_daemon_refuses_existing_db_before_nvml(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "gua.db"
+    db_path.write_text("existing", encoding="utf-8")
+
+    rc = main(["daemon", "--db", str(db_path)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert f"{db_path} already exists" in captured.err
+
+
+def test_report_refuses_missing_db_without_creating_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "missing.db"
+
+    rc = main(["report", "--db", str(db_path)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert f"{db_path} does not exist" in captured.err
+    assert not db_path.exists()
 
 
 def _fake_doctor_report() -> DoctorReport:
