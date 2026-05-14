@@ -61,6 +61,7 @@ _DURATION_UNITS = {
     "h": "hours",
     "d": "days",
 }
+DEFAULT_DB_PATH = Path("/tmp/gua.db")
 
 
 def _duration(s: str) -> timedelta:
@@ -90,7 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
         "daemon",
         help="Real NVML sampling into SQLite (long-running, NVIDIA host required)",
     )
-    p_daemon.add_argument("--db", required=True, help="Path to SQLite database file")
+    p_daemon.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help=f"Path to a new SQLite database file [default: {DEFAULT_DB_PATH}]",
+    )
     p_daemon.add_argument(
         "--interval",
         type=_duration,
@@ -103,7 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         "report",
         help="Print §1–§5 retrospective report from an accumulated database",
     )
-    p_report.add_argument("--db", required=True, help="Path to SQLite database file")
+    p_report.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help=f"Path to SQLite database file [default: {DEFAULT_DB_PATH}]",
+    )
     p_report.add_argument(
         "--since",
         type=_duration,
@@ -292,6 +301,14 @@ def _cmd_gua_uninstall(args: argparse.Namespace) -> int:
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
     """실 NVML 데몬 — 운영용."""
+    db_path = Path(args.db)
+    if db_path.exists():
+        print(
+            f"gpu-usage-audit daemon: {db_path} already exists; "
+            "choose another --db path or remove the existing file before starting.",
+            file=sys.stderr,
+        )
+        return 2
     conn = open_db(args.db)
     tier = NVMLTier()
     try:
@@ -325,6 +342,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"gpu-usage-audit report: {db_path} does not exist; "
+            "run `gpu-usage-audit daemon` first or pass --db PATH.",
+            file=sys.stderr,
+        )
+        return 2
     conn = open_db(args.db)
     try:
         cutoff = datetime.now(UTC) - args.since

@@ -140,6 +140,10 @@ Run the report from another shell:
 gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
 ```
 
+If `--db` is omitted, both `daemon` and `report` use `/tmp/gua.db`.
+`daemon` refuses to start when that database file already exists, so a
+new collection run does not silently append to an old test database.
+
 > The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
 > driver-less host it exits with `NVML Shared Library Not Found`. For a
 > driverless box, use `demo` instead.
@@ -150,18 +154,19 @@ gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
 
 | Command  | What it does                                                |
 | -------- | ----------------------------------------------------------- |
-| `daemon` | Long-running background process. Samples real NVML telemetry on every tick and **appends** to the database. Stop with Ctrl+C (SIGINT) or `systemctl stop`. NVIDIA host required. |
+| `daemon` | Long-running background process. Samples real NVML telemetry on every tick and writes to a new database. Stop with Ctrl+C (SIGINT) or `systemctl stop`. NVIDIA host required. |
 | `report` | One-shot read against the accumulated database. Safe to run **while the daemon is still writing** — SQLite WAL mode handles the concurrency. |
 | `demo`   | Self-contained showcase. Records N fake ticks and immediately prints the report. No GPU, no second shell, no operational meaning — just to see the output shape. |
 
 ### `daemon`
 
 ```
-gpu-usage-audit daemon --db PATH [--interval D]
+gpu-usage-audit daemon [--db PATH] [--interval D]
 ```
 
-- `--db PATH` — SQLite file to write to. Created if missing. WAL mode
-  enabled automatically.
+- `--db PATH` (default `/tmp/gua.db`) — SQLite file to create and write
+  to. The daemon exits with an error if the file already exists. WAL mode
+  is enabled automatically.
 - `--interval D` (default `30s`) — how often to sample. Accepts `30s`,
   `1m`, `200ms`, etc.
 
@@ -171,10 +176,11 @@ row count is printed.
 ### `report`
 
 ```
-gpu-usage-audit report --db PATH [--since D] [--interval D] [--width N]
+gpu-usage-audit report [--db PATH] [--since D] [--interval D] [--width N]
 ```
 
-- `--db PATH` — same SQLite file the daemon writes to.
+- `--db PATH` (default `/tmp/gua.db`) — same SQLite file the daemon writes
+  to. The report exits with an error if the file does not exist.
 - `--since D` (default `1h`) — the report window. **No upper bound** —
   `--since 365d` is accepted. The effective window is min(`--since`, age
   of oldest sample), so passing a huge `--since` is the same as "all
