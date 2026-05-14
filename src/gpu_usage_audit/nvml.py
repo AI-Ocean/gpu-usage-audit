@@ -1,8 +1,7 @@
 """실 NVIDIA NVML 위에서 GPU/프로세스 텔레메트리 수집.
 
-`nvidia-ml-py` (= pynvml) 의존. 옵션 의존성 `[nvml]` 로만 설치되므로,
-import 단계에서 실패 시 `NVMLNotAvailableError` 를 띄울 수 있는
-*늦은 바인딩* 패턴.
+`nvidia-ml-py` (= pynvml) 의존. bare-metal 1.0 에서는 기본 dependency 지만
+GPU 없는 개발/CI/demo 환경도 계속 동작해야 하므로 import/init 은 늦게 한다.
 
 운영 머신 (NVIDIA 드라이버 깔린 GPU 머신) 에서만 실 동작 검증 가능.
 개발 머신에선 모킹으로 *변환 로직* 만 검증 (nvmlInit 자체는 실패).
@@ -31,9 +30,8 @@ def _load_pynvml() -> Any:
         import pynvml
     except ImportError as e:
         raise NVMLNotAvailableError(
-            "pynvml not installed. Install the [nvml] extra:\n"
-            "  pip install 'gpu-usage-audit[nvml]'\n"
-            "  uvx --with nvidia-ml-py gpu-usage-audit ..."
+            "pynvml is not importable. gpu-usage-audit includes nvidia-ml-py as a "
+            "default dependency; reinstall with `uv tool install --force gpu-usage-audit`."
         ) from e
     return pynvml
 
@@ -73,9 +71,7 @@ class NVMLTier:
         try:
             nvml.nvmlInit()
         except nvml.NVMLError as e:
-            raise NVMLNotAvailableError(
-                f"NVML initialization failed (driver missing or version mismatch?): {e}"
-            ) from e
+            raise NVMLNotAvailableError(_nvml_init_error_message(str(e))) from e
         self._nvml = nvml
         self._initialized = True
         return _decode(nvml.nvmlSystemGetDriverVersion())
@@ -125,3 +121,17 @@ class NVMLTier:
         with contextlib.suppress(self._nvml.NVMLError):
             self._nvml.nvmlShutdown()
         self._initialized = False
+
+
+def _nvml_init_error_message(error: str) -> str:
+    detail = error.strip() or "unknown NVML error"
+    lowered = detail.lower()
+    if "shared library not found" in lowered or "libnvidia-ml" in lowered:
+        reason = "libnvidia-ml.so.1 was not found"
+    elif "driver/library version mismatch" in lowered or "version mismatch" in lowered:
+        reason = "the NVIDIA driver and NVML library versions do not match"
+    elif "driver not loaded" in lowered or "no driver" in lowered:
+        reason = "the NVIDIA driver is not loaded"
+    else:
+        reason = "driver or NVML initialization failed"
+    return f"NVML initialization failed: {reason}. Detail: {detail}"

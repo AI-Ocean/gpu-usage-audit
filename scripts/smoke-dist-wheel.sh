@@ -32,6 +32,19 @@ fi
 "$python_bin" -m venv "$tmpdir/venv"
 "$tmpdir/venv/bin/python" -m pip install --no-deps --no-index "$wheel"
 
+"$tmpdir/venv/bin/python" - "$expected_version" <<'PY'
+import importlib.metadata
+import sys
+
+expected_version = sys.argv[1]
+dist = importlib.metadata.distribution("gpu-usage-audit")
+if dist.version != expected_version:
+    raise SystemExit(f"metadata version {dist.version} != wheel version {expected_version}")
+requires = dist.requires or []
+if not any(req.split(";")[0].strip().lower().startswith("nvidia-ml-py") for req in requires):
+    raise SystemExit("wheel metadata does not require nvidia-ml-py")
+PY
+
 actual_version="$("$tmpdir/venv/bin/gpu-usage-audit" version)"
 if [[ "$actual_version" != "$expected_version" ]]; then
   printf 'gpu-usage-audit version %s != wheel version %s\n' \

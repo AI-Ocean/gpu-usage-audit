@@ -127,10 +127,25 @@ Recommended commands:
 Host GPU:
   /dev/nvidia*: ok, 10 GPU device files
   nvidia-smi: ok, 10 GPUs
-  NVML: error, pynvml is not installed
+  NVML: error, pynvml is not importable
 
 Fix:
-  uv tool install --force --with nvidia-ml-py gpu-usage-audit
+  Reinstall the tool environment: uv tool install --force gpu-usage-audit
+```
+
+`pynvml`이 import되지만 NVML init이 실패하면 packaging 문제가 아니라 host
+driver/NVML 문제로 안내한다.
+
+예:
+
+```text
+Host GPU:
+  /dev/nvidia*: ok, 10 GPU device files
+  nvidia-smi: ok, 10 GPUs
+  NVML: error, loadable but init failed: NVML initialization failed: the NVIDIA driver and NVML library versions do not match. Detail: Driver/library version mismatch
+
+Fix:
+  Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available and matches the loaded kernel driver; verify with `nvidia-smi -L`.
 ```
 
 DB 파일이 이미 있으면 `doctor`는 바로 실패할 daemon 명령을 추천하지 않고,
@@ -181,8 +196,9 @@ GPU 없는 환경의 형식 확인용으로 유지한다. 제품 핵심 workflow
 ## Packaging Direction
 
 베어메탈 전용 제품으로 정리하면 NVML은 optional feature가 아니라 사실상 핵심
-기능이다. 다만 GPU 없는 개발/문서/CI 환경에서 `demo`와 tests가 동작해야 하므로
-다음 중 하나를 결정해야 한다.
+기능이다. PR B에서는 1번을 선택한다. GPU 없는 개발/문서/CI 환경에서는
+`nvidia-ml-py` import는 가능하고, driver/NVML init만 실패해야 하며 `demo`와
+tests는 계속 동작해야 한다.
 
 1. `nvidia-ml-py`를 기본 dependency로 올린다.
    - 장점: `uv tool install gpu-usage-audit` 후 바로 host NVML 진단 가능.
@@ -191,8 +207,6 @@ GPU 없는 환경의 형식 확인용으로 유지한다. 제품 핵심 workflow
 2. core dependency는 0으로 유지하고 doctor가 설치 명령을 강하게 안내한다.
    - 장점: 현재 packaging 철학 유지.
    - 단점: 베어메탈 사용자가 추가 `--with nvidia-ml-py` 단계를 밟아야 한다.
-
-1.0 제품 메시지를 단순하게 만들려면 1번을 선호한다.
 
 ## Data Model For 1.0
 
@@ -231,11 +245,13 @@ Working state:
 
 ### PR B: Packaging And Install UX
 
+Status: implemented in branch `feature/bare-metal-packaging-install-ux`.
+
 Deliver:
 
-- `nvidia-ml-py`를 기본 dependency로 올릴지 결정하고 반영.
-- install 문서를 `uv tool install gpu-usage-audit` 중심으로 단순화.
-- NVML 미설치/driver mismatch/fail case 메시지 정리.
+- [x] `nvidia-ml-py`를 기본 dependency로 올릴지 결정하고 반영.
+- [x] install 문서를 `uv tool install gpu-usage-audit` 중심으로 단순화.
+- [x] NVML 미설치/driver mismatch/fail case 메시지 정리.
 
 Working state:
 

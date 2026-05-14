@@ -130,12 +130,18 @@ gua doctor
 
 Doctor should show the current machine, visible `/dev/nvidia*` device
 files, `nvidia-smi -L` GPUs, NVML device count, and `/tmp/gua.db` status.
-If it reports that `pynvml` is not installed, add the NVML Python package
-to the tool environment:
+`nvidia-ml-py` is installed by default with `gpu-usage-audit`; if doctor
+reports that `pynvml` is not importable, reinstall the isolated tool
+environment:
 
 ```sh
-uv tool install --force --with nvidia-ml-py gpu-usage-audit
+uv tool install --force gpu-usage-audit
 ```
+
+If `pynvml` imports but NVML init fails, fix the host NVIDIA driver
+installation instead. `libnvidia-ml.so.1` must be available and match the
+loaded kernel driver; `nvidia-smi -L` should list GPUs before the daemon
+can collect real telemetry.
 
 Then run the collector:
 
@@ -157,8 +163,8 @@ new collection run does not silently append to an old test database. If
 `--db PATH` for the next daemon run.
 
 > The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
-> driver-less host it exits with `NVML Shared Library Not Found`. For a
-> driverless box, use `demo` instead.
+> driverless host it exits with a friendly NVML initialization error. For
+> a driverless box, use `demo` instead.
 
 ## Usage
 

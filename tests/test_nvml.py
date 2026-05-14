@@ -14,7 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gpu_usage_audit.nvml import NVMLNotAvailableError, NVMLTier, _decode
+from gpu_usage_audit.nvml import (
+    NVMLNotAvailableError,
+    NVMLTier,
+    _decode,
+    _nvml_init_error_message,
+)
 
 TS = datetime(2026, 5, 11, 0, 0, 0, tzinfo=UTC)
 
@@ -40,7 +45,7 @@ def test_probe_raises_when_pynvml_missing(monkeypatch: pytest.MonkeyPatch) -> No
     # pynvml 모듈을 sys.modules 에서 가린 채 import 시도 → 실패 경로.
     monkeypatch.setitem(sys.modules, "pynvml", None)
     tier = NVMLTier()
-    with pytest.raises(NVMLNotAvailableError, match="pynvml not installed"):
+    with pytest.raises(NVMLNotAvailableError, match="pynvml is not importable"):
         tier.probe()
 
 
@@ -170,3 +175,18 @@ def test_probe_translates_nvml_error_to_friendly(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(NVMLNotAvailableError, match="initialization failed"):
         NVMLTier().probe()
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("NVML Shared Library Not Found", "libnvidia-ml.so.1 was not found"),
+        ("Driver/library version mismatch", "versions do not match"),
+        ("no driver", "driver is not loaded"),
+        ("other failure", "driver or NVML initialization failed"),
+    ],
+)
+def test_nvml_init_error_message_classifies_common_failures(raw: str, want: str) -> None:
+    message = _nvml_init_error_message(raw)
+    assert want in message
+    assert raw in message

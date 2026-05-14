@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from .model import RuntimePlan
-from .nvml import NVMLNotAvailableError, _decode, _load_pynvml
+from .nvml import NVMLNotAvailableError, _decode, _load_pynvml, _nvml_init_error_message
 
 type CheckStatus = Literal["ok", "warning", "error", "skipped"]
 type Which = Callable[[str], str | None]
@@ -324,7 +324,7 @@ def probe_nvml() -> NVMLInfo:
             driver_version=_decode(nvml.nvmlSystemGetDriverVersion()),
         )
     except nvml.NVMLError as e:
-        return NVMLInfo(loadable=True, initialized=False, error=str(e))
+        return NVMLInfo(loadable=True, initialized=False, error=_nvml_init_error_message(str(e)))
     except Exception as e:  # pragma: no cover - 플랫폼별 NVML 실패 방어.
         return NVMLInfo(loadable=True, initialized=False, error=str(e))
     finally:
@@ -342,11 +342,17 @@ def check_nvml(info: NVMLInfo) -> DoctorCheck:
         "error": info.error,
     }
     if not info.loadable:
+        error = _one_line(info.error)
+        summary = (
+            error
+            if error.startswith("pynvml is not importable")
+            else f"pynvml is not importable: {error}"
+        )
         return DoctorCheck(
             id="nvml",
             name="NVML",
             status="error",
-            summary=f"pynvml is not installed or loadable: {_one_line(info.error)}",
+            summary=summary,
             details=details,
         )
     if not info.initialized:
@@ -690,7 +696,12 @@ def _fixes_for(report: DoctorReport) -> list[str]:
         fixes.extend(report.plan.blockers)
     nvml = checks["nvml"].details
     if nvml.get("loadable") is False:
-        fixes.append("uv tool install --force --with nvidia-ml-py gpu-usage-audit")
+        fixes.append("Reinstall the tool environment: uv tool install --force gpu-usage-audit")
+    elif nvml.get("initialized") is False:
+        fixes.append(
+            "Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available "
+            "and matches the loaded kernel driver; verify with `nvidia-smi -L`."
+        )
     return fixes
 
 

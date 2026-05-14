@@ -141,29 +141,24 @@ wheels = [
 name = "gpu-usage-audit"
 version = "0.4.1"
 source = { editable = "." }
-
-[package.optional-dependencies]
-nvml = [
+dependencies = [
     { name = "nvidia-ml-py" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
-    { name = "nvidia-ml-py" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "nvidia-ml-py", marker = "extra == 'nvml'", specifier = ">=12.535" }]
-provides-extras = ["nvml"]
+requires-dist = [{ name = "nvidia-ml-py", specifier = ">=12.535" }]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.10" },
-    { name = "nvidia-ml-py", specifier = ">=12.535" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.5" },
