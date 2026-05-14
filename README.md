@@ -10,10 +10,11 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** v0.4.1 — `gua` exposes the new auto-runtime command surface
-> as safe placeholders. `daemon` still runs on a real NVIDIA host, `demo`
-> runs anywhere (no GPU required), and `report` reads either. The Go v0.1.0
-> implementation remains downloadable at tag `v0.1.0` / branch
+> **Status:** main includes read-only `gua doctor` runtime diagnostics and
+> `gua start --dry-run` plan output. Managed start/status/report/stop/uninstall
+> flows are still placeholders. `daemon` still runs on a real NVIDIA host,
+> `demo` runs anywhere (no GPU required), and `report` reads either. The Go
+> v0.1.0 implementation remains downloadable at tag `v0.1.0` / branch
 > [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
 ## Install
@@ -34,13 +35,16 @@ gua start --dry-run
 gpu-usage-audit demo
 ```
 
-In v0.4.1 the `gua` commands are intentionally read-only placeholders:
-they print what is not implemented yet and make no system, service,
-cluster, or database changes. Use `gpu-usage-audit daemon/report/demo`
-for the existing compatibility workflow.
+`gua doctor` and `gua start --dry-run` are intentionally read-only: they
+inspect the local environment, print a recommended runtime plan, and make
+no system, service, cluster, or database changes. Use
+`gpu-usage-audit daemon/report/demo` for the existing compatibility
+workflow.
 
-Available `gua` subcommands in v0.4.1: `doctor`, `start`, `status`,
-`report`, `stop`, and `uninstall`.
+Use `gua doctor --json` for the same report in a machine-readable form.
+
+Available `gua` subcommands: `doctor`, `start`, `status`, `report`,
+`stop`, and `uninstall`.
 
 Update or remove the installed tool with uv:
 
@@ -51,8 +55,7 @@ uv tool uninstall gpu-usage-audit
 
 `uv tool uninstall gpu-usage-audit` removes the installed Python tool and
 its `gua` / `gpu-usage-audit` commands. `gua uninstall` is different: it
-is reserved for future runtime cleanup and is a no-op placeholder in
-v0.4.1.
+is reserved for future runtime cleanup and is a no-op placeholder.
 
 GitHub Release assets are also available for manual download:
 

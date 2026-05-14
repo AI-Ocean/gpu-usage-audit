@@ -10,8 +10,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
 from .classify import Class
+
+RuntimeMode = Literal[
+    "host-systemd",
+    "host-foreground",
+    "k8s-daemonset",
+    "local-container",
+    "unsupported",
+]
+TelemetrySource = Literal["nvml", "fake"]
+SchedulerSource = Literal["none", "k8s", "slurm"]
+PlanConfidence = Literal["high", "medium", "low"]
 
 
 @dataclass(slots=True)
@@ -61,6 +73,34 @@ class HostMeta:
     env_kind: str
     driver_version: str
     first_seen: datetime
+
+
+@dataclass(slots=True)
+class PlannedAction:
+    """A future runtime action described by a dry-run plan.
+
+    `gua doctor` and `gua start --dry-run` only render these actions. They do
+    not execute them.
+    """
+
+    name: str
+    summary: str
+    changes_system: bool
+
+
+@dataclass(slots=True)
+class RuntimePlan:
+    """Structured recommendation for where the collector should run."""
+
+    mode: RuntimeMode
+    telemetry: TelemetrySource
+    scheduler: SchedulerSource
+    confidence: PlanConfidence
+    reasons: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    required_privileges: list[str] = field(default_factory=list)
+    actions: list[PlannedAction] = field(default_factory=list)
 
 
 @dataclass(slots=True)

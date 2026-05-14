@@ -13,6 +13,7 @@ argparse stdlib 사용 — 의존성 0.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import socket
@@ -25,6 +26,12 @@ from pathlib import Path
 from . import __version__
 from .daemon import install_signal_handlers, run_daemon
 from .db import open_db
+from .doctor import (
+    build_doctor_report,
+    doctor_report_to_dict,
+    render_doctor,
+    render_runtime_plan,
+)
 from .env import detect_env_kind
 from .identity import system_user_lookup
 from .model import HostMeta
@@ -167,13 +174,18 @@ def build_gua_parser() -> argparse.ArgumentParser:
 
     p_doctor = sub.add_parser(
         "doctor",
-        help="Inspect the host and recommend a runtime plan (placeholder)",
+        help="Inspect the host and recommend a runtime plan",
+    )
+    p_doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the read-only doctor report as JSON",
     )
     p_doctor.set_defaults(func=_cmd_gua_doctor)
 
     p_start = sub.add_parser(
         "start",
-        help="Start a managed collector runtime (dry-run skeleton only)",
+        help="Start a managed collector runtime (dry-run plan only)",
     )
     p_start.add_argument(
         "--dry-run",
@@ -217,25 +229,30 @@ def _print_gua_placeholder(command: str, detail: str) -> int:
 
 
 def _cmd_gua_doctor(args: argparse.Namespace) -> int:
-    """doctor read-only detection 이 붙기 전의 placeholder."""
-    return _print_gua_placeholder(
-        args.command,
-        "runtime detection is not implemented yet; this skeleton ran no checks.",
-    )
+    """Read-only environment detection and RuntimePlan recommendation."""
+    report = build_doctor_report()
+    if args.json:
+        print(json.dumps(doctor_report_to_dict(report), indent=2, sort_keys=True))
+        return 0
+    print(render_doctor(report))
+    print(_NO_SYSTEM_CHANGES)
+    return 0
 
 
 def _cmd_gua_start(args: argparse.Namespace) -> int:
     """managed runtime start 구현 전의 dry-run 전용 placeholder."""
     if not args.dry_run:
-        print(
-            "gua start: only `gua start --dry-run` is available in this skeleton.", file=sys.stderr
-        )
+        print("gua start: only `gua start --dry-run` is available in this PR.", file=sys.stderr)
         print(_NO_SYSTEM_CHANGES, file=sys.stderr)
         return 2
-    return _print_gua_placeholder(
-        args.command,
-        "runtime planning is not implemented yet; --dry-run applied no start plan.",
-    )
+    report = build_doctor_report()
+    print("gua start --dry-run")
+    print()
+    print(render_runtime_plan(report.plan))
+    print()
+    print("Collector start/stop is not implemented yet; dry-run printed the plan only.")
+    print(_NO_SYSTEM_CHANGES)
+    return 0
 
 
 def _cmd_gua_status(args: argparse.Namespace) -> int:
