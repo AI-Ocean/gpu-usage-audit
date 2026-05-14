@@ -1,7 +1,13 @@
 # Auto Runtime Audit 개발 계획
 
-상태: 초안
+상태: 보류
 범위: auto-runtime architecture 제안을 구현하기 위한 개발 계획
+
+> 2026-05-14 scope reset: 1.0 제품은 auto-runtime/cluster-wide audit 대신
+> **설치된 현재 베어메탈 머신**만 진단하고 수집하는 방향으로 정리한다. 1.0
+> 기준 문서는 `projects/bare-metal-1.0/plan.ko.md`를 따른다. 이 문서는
+> Kubernetes, Slurm, Docker/Podman, scheduler allocation-aware report를 다시
+> 확장할 때 참고할 보류 문서로 남긴다.
 
 ## 목표
 
