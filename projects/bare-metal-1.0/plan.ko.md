@@ -27,6 +27,7 @@ retrospective report로 active / idle-held / truly-idle 상태를 보여준다.
 uv tool install gpu-usage-audit
 
 gua doctor
+gua doctor --db /var/lib/gua/gua.db  # optional, daemon DB 경로를 바꿀 때
 
 gpu-usage-audit daemon --interval 30s
 gpu-usage-audit report --since 1h --interval 30s
@@ -58,9 +59,9 @@ Host GPU:
   nvidia-smi: ok, 10 GPUs
   NVML: ok, initialized, GPU count=10
 
-Recommended:
+Recommended commands:
   collect: gpu-usage-audit daemon --interval 30s
-  report:  gpu-usage-audit report --since 1h --interval 30s
+  report after collecting: gpu-usage-audit report --since 1h --interval 30s
 ```
 
 ## Non-goals For 1.0
@@ -93,7 +94,8 @@ Recommended:
 - `/dev/nvidia*` GPU/control/uvm device file.
 - `nvidia-smi` 존재와 `nvidia-smi -L` 결과.
 - NVML load/init/device count/driver version.
-- 기본 DB path(`/tmp/gua.db`) 상태.
+- 진단 대상 DB path 상태. 기본값은 `/tmp/gua.db`이고, `--db PATH`로
+  daemon/report에 쓸 경로를 미리 점검할 수 있다.
 
 출력 목표:
 
@@ -114,7 +116,7 @@ Database:
 
 Recommended commands:
   collect: gpu-usage-audit daemon --interval 30s
-  report:  gpu-usage-audit report --since 1h --interval 30s
+  report after collecting: gpu-usage-audit report --since 1h --interval 30s
 ```
 
 실패 출력은 어느 층이 막혔는지 직접 말해야 한다.
@@ -129,6 +131,24 @@ Host GPU:
 
 Fix:
   uv tool install --force --with nvidia-ml-py gpu-usage-audit
+```
+
+DB 파일이 이미 있으면 `doctor`는 바로 실패할 daemon 명령을 추천하지 않고,
+기존 데이터를 읽는 report 명령만 보여준다.
+
+예:
+
+```text
+Database:
+  default: /tmp/gua.db
+  status: warning, present; daemon will refuse this path, report can read it
+
+Notes:
+  - /tmp/gua.db already exists; `gpu-usage-audit daemon` will refuse this path
+    until it is removed or another --db path is provided.
+
+Recommended commands:
+  report existing data: gpu-usage-audit report --since 1h --interval 30s
 ```
 
 ### `gpu-usage-audit daemon`
@@ -190,18 +210,24 @@ GPU 없는 환경의 형식 확인용으로 유지한다. 제품 핵심 workflow
 
 ### PR A: Bare Metal Scope Reset
 
+Status: implemented in PR #9.
+
 Deliver:
 
-- auto-runtime doctor 구현 제거 또는 축소.
-- `gua doctor`를 local machine / host NVML readiness 전용으로 재작성.
-- k8s/slurm/docker signal 제거.
-- `RuntimePlan`을 host/unsupported 정도로 축소하거나 doctor 내부 모델로 이동.
-- README의 제품 설명을 single-host bare-metal 중심으로 재정렬.
+- [x] auto-runtime doctor 구현 제거 또는 축소.
+- [x] `gua doctor`를 local machine / host NVML readiness 전용으로 재작성.
+- [x] k8s/slurm/docker signal 제거.
+- [x] `RuntimePlan`을 host/unsupported 중심으로 축소.
+- [x] README의 제품 설명을 single-host bare-metal 중심으로 재정렬.
+- [x] `gua start/status/report/stop/uninstall` placeholder 사용자 표면 제거.
+- [x] `gua doctor --db PATH`로 실제 daemon/report DB 경로를 점검.
 
 Working state:
 
 - `gua doctor`가 베어메탈 host에서 daemon/report 실행 가능 여부를 설명한다.
 - cluster-wide signal은 출력하지 않는다.
+- DB가 없으면 collect/report 명령을 보여주고, DB가 이미 있으면 report-only
+  명령을 보여준다.
 
 ### PR B: Packaging And Install UX
 

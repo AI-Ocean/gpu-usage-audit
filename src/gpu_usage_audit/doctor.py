@@ -418,7 +418,7 @@ def probe_default_db(db_path: str | Path = DEFAULT_DB_PATH) -> tuple[DatabaseInf
     )
     if exists and is_file:
         status: CheckStatus = "warning"
-        summary = "present; daemon will refuse the default path, report can read it"
+        summary = "present; daemon will refuse this path, report can read it"
     elif exists:
         status = "error"
         summary = "present but is not a regular file"
