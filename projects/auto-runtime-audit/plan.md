@@ -1,7 +1,14 @@
 # Auto Runtime Audit Development Plan
 
-Status: draft
+Status: on hold
 Scope: development plan for the auto-runtime architecture proposal
+
+> 2026-05-14 scope reset: the 1.0 product is focused on diagnosing and
+> collecting from **the currently installed bare-metal machine**, not
+> auto-runtime or cluster-wide audit. The 1.0 plan of record is
+> `projects/bare-metal-1.0/plan.ko.md`. This document remains as a deferred
+> reference for a future expansion back into Kubernetes, Slurm, Docker/Podman,
+> and scheduler allocation-aware reporting.
 
 ## Goal
 

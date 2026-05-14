@@ -1,9 +1,10 @@
-"""런타임 doctor 감지와 plan 선택 테스트."""
+"""Local bare-metal doctor readiness tests."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
 from gpu_usage_audit.doctor import (
     CommandResult,
@@ -26,12 +27,15 @@ class FakeRunner:
         return self._responses.get(key, CommandResult(returncode=1, stderr="unexpected command"))
 
 
-def test_build_doctor_report_recommends_host_slurm_plan() -> None:
+def test_build_doctor_report_checks_only_local_bare_metal(tmp_path: Path) -> None:
     runner = FakeRunner(
         {
-            ("scontrol", "show", "config"): CommandResult(
+            ("nvidia-smi", "-L"): CommandResult(
                 returncode=0,
-                stdout="GresTypes=gpu\nGresPluginDir=/usr/lib/slurm\n",
+                stdout=(
+                    "GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n"
+                    "GPU 1: NVIDIA A100-SXM4-40GB (UUID: GPU-b)\n"
+                ),
             )
         }
     )
@@ -44,150 +48,68 @@ def test_build_doctor_report_recommends_host_slurm_plan() -> None:
             device_count=2,
             driver_version="560.35.05",
         ),
-        which=_which({"scontrol": "/usr/bin/scontrol"}),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
         command_runner=runner,
-        env={},
-        path_exists=_exists(set()),
-        slurm_config_paths=(),
-        container_hook_paths=(),
-    )
-
-    assert report.plan.mode == "host-systemd"
-    assert report.plan.telemetry == "nvml"
-    assert report.plan.scheduler == "slurm"
-    assert report.plan.confidence == "high"
-    assert ("scontrol", "show", "config") in runner.calls
-    assert "Slurm command/config signal" in render_doctor(report)
-
-
-def test_build_doctor_report_recommends_k8s_daemonset_plan() -> None:
-    runner = FakeRunner(
-        {
-            (
-                "kubectl",
-                "auth",
-                "can-i",
-                "get",
-                "pods",
-                "--all-namespaces",
-            ): CommandResult(returncode=0, stdout="yes\n"),
-            ("kubectl", "get", "runtimeclass", "-o", "json"): CommandResult(
-                returncode=0,
-                stdout=json.dumps({"items": [{"metadata": {"name": "nvidia"}}]}),
-            ),
-            ("kubectl", "get", "nodes", "-o", "json"): CommandResult(
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "items": [
-                            {
-                                "metadata": {
-                                    "name": "gpu-node-a",
-                                    "labels": {"nvidia.com/gpu.present": "true"},
-                                },
-                                "status": {"capacity": {"nvidia.com/gpu": "4"}},
-                            }
-                        ]
-                    }
-                ),
-            ),
-        }
-    )
-
-    report = build_doctor_report(
-        dev_paths=[],
-        nvml_probe=lambda: NVMLInfo(
-            loadable=True,
-            initialized=True,
-            device_count=0,
-            driver_version="560.35.05",
-        ),
-        which=_which({"kubectl": "/usr/bin/kubectl"}),
-        command_runner=runner,
-        env={},
-        path_exists=_exists(set()),
-        slurm_config_paths=(),
-        container_hook_paths=(),
+        db_path=tmp_path / "gua.db",
     )
 
     assert [check.id for check in report.checks] == [
         "os",
         "nvidia_devices",
+        "nvidia_smi",
         "nvml",
-        "kubectl",
-        "kubernetes_runtime",
-        "slurm",
-        "container_fallback",
+        "default_db",
     ]
-    assert report.plan.mode == "k8s-daemonset"
-    assert report.plan.scheduler == "k8s"
-    assert report.plan.confidence == "high"
-    data = doctor_report_to_dict(report)
-    assert data["read_only"] is True
-    assert data["no_system_changes"] is True
-    json.dumps(data)
-
-
-def test_build_doctor_report_recommends_local_container_fallback() -> None:
-    runner = FakeRunner(
-        {
-            ("docker", "info", "--format", "{{json .Runtimes}}"): CommandResult(
-                returncode=0,
-                stdout='{"runc":{},"nvidia":{}}',
-            )
-        }
-    )
-
-    report = build_doctor_report(
-        dev_paths=[],
-        nvml_probe=lambda: NVMLInfo(
-            loadable=True,
-            initialized=False,
-            error="driver not visible",
-        ),
-        which=_which(
-            {
-                "docker": "/usr/bin/docker",
-                "nvidia-container-runtime": "/usr/bin/nvidia-container-runtime",
-            }
-        ),
-        command_runner=runner,
-        env={},
-        path_exists=_exists(set()),
-        slurm_config_paths=(),
-        container_hook_paths=(),
-    )
-
-    assert report.plan.mode == "local-container"
+    assert runner.calls == [("nvidia-smi", "-L")]
+    assert report.plan.mode == "host"
+    assert report.plan.telemetry == "nvml"
     assert report.plan.scheduler == "none"
-    assert report.plan.confidence == "medium"
+
+    rendered = render_doctor(report)
+    assert "Scope:\n  machine: local" in rendered
+    assert "Host GPU:" in rendered
+    assert "nvidia-smi: ok, 2 GPUs" in rendered
+    assert "NVML: ok, initialized, GPU count=2, driver 560.35.05" in rendered
+    assert "status: absent, ready for a new daemon run" in rendered
+    assert "Recommended commands:" in rendered
+    assert "Kubernetes" not in rendered
+    assert "Slurm" not in rendered
+    assert "Docker" not in rendered
 
 
-def test_build_doctor_report_marks_unsupported_when_no_runtime_signal() -> None:
+def test_build_doctor_report_marks_unsupported_when_nvml_is_missing(tmp_path: Path) -> None:
     report = build_doctor_report(
-        dev_paths=[],
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
         nvml_probe=lambda: NVMLInfo(
             loadable=False,
             initialized=False,
             error="pynvml not installed\ninstall extra",
         ),
-        which=_which({}),
-        command_runner=FakeRunner({}),
-        env={},
-        path_exists=_exists(set()),
-        slurm_config_paths=(),
-        container_hook_paths=(),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout="GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n",
+                )
+            }
+        ),
+        db_path=tmp_path / "gua.db",
     )
 
     assert report.plan.mode == "unsupported"
-    assert any("No /dev/nvidia" in blocker for blocker in report.plan.blockers)
-    assert any("pynvml not installed" in blocker for blocker in report.plan.blockers)
+    assert any("NVML could not be loaded" in blocker for blocker in report.plan.blockers)
     rendered = render_doctor(report)
-    assert "Recommended plan:" in rendered
-    assert "runtime: unsupported" in rendered
+    assert "NVML: error, pynvml is not installed or loadable" in rendered
+    assert "Fix:" in rendered
+    assert "uv tool install --force --with nvidia-ml-py gpu-usage-audit" in rendered
+    assert "Recommended commands:" not in rendered
 
 
-def test_build_doctor_report_warns_when_host_plan_is_inside_kubernetes() -> None:
+def test_default_db_present_warns_without_blocking_host_plan(tmp_path: Path) -> None:
+    db_path = tmp_path / "gua.db"
+    db_path.write_text("existing", encoding="utf-8")
+
     report = build_doctor_report(
         dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
         nvml_probe=lambda: NVMLInfo(
@@ -196,59 +118,133 @@ def test_build_doctor_report_warns_when_host_plan_is_inside_kubernetes() -> None
             device_count=1,
             driver_version="560.35.05",
         ),
-        which=_which({}),
-        command_runner=FakeRunner({}),
-        env={"KUBERNETES_SERVICE_HOST": "10.0.0.1"},
-        path_exists=_exists(set()),
-        slurm_config_paths=(),
-        container_hook_paths=(),
-    )
-
-    assert report.plan.mode == "host-systemd"
-    assert any("in-cluster environment" in warning for warning in report.plan.warnings)
-
-
-def test_build_doctor_report_surfaces_docker_permission_denied() -> None:
-    runner = FakeRunner(
-        {
-            ("docker", "info", "--format", "{{json .Runtimes}}"): CommandResult(
-                returncode=1,
-                stderr="permission denied while trying to connect to the Docker daemon socket",
-            )
-        }
-    )
-
-    report = build_doctor_report(
-        dev_paths=[],
-        nvml_probe=lambda: NVMLInfo(loadable=True, initialized=False, error="no driver"),
-        which=_which(
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
             {
-                "docker": "/usr/bin/docker",
-                "nvidia-container-runtime": "/usr/bin/nvidia-container-runtime",
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout="GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n",
+                )
             }
         ),
-        command_runner=runner,
-        env={},
-        path_exists=_exists(set()),
-        slurm_config_paths=(),
-        container_hook_paths=(),
+        db_path=db_path,
     )
 
-    container_check = next(check for check in report.checks if check.id == "container_fallback")
-    assert container_check.status == "warning"
-    assert "docker daemon access required" in container_check.summary
-    assert report.plan.mode == "unsupported"
+    db_check = next(check for check in report.checks if check.id == "default_db")
+    assert report.plan.mode == "host"
+    assert db_check.status == "warning"
+    assert any("already exists" in warning for warning in report.plan.warnings)
+    rendered = render_doctor(report)
+    assert "daemon will refuse" in rendered
+    assert "collect:" not in rendered
+    assert "report existing data:" in rendered
+
+
+def test_custom_db_path_is_rendered_and_shell_quoted(tmp_path: Path) -> None:
+    db_path = tmp_path / "with space" / "gua db.sqlite"
+    db_path.parent.mkdir()
+
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=True,
+            device_count=1,
+            driver_version="560.35.05",
+        ),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout="GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n",
+                )
+            }
+        ),
+        db_path=db_path,
+    )
+
+    rendered = render_doctor(report)
+    quoted = f"'{db_path}'"
+    assert f"target: {db_path}" in rendered
+    assert f"collect: gpu-usage-audit daemon --db {quoted} --interval 30s" in rendered
+    assert (
+        f"report after collecting: gpu-usage-audit report --db {quoted} --since 1h --interval 30s"
+    ) in rendered
+
+
+def test_nvidia_smi_counts_mig_instances(tmp_path: Path) -> None:
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=True,
+            device_count=1,
+            driver_version="560.35.05",
+        ),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout=(
+                        "GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n"
+                        "  MIG 1g.5gb Device 0: (UUID: MIG-a)\n"
+                    ),
+                )
+            }
+        ),
+        db_path=tmp_path / "gua.db",
+    )
+
+    smi_check = next(check for check in report.checks if check.id == "nvidia_smi")
+    assert smi_check.status == "ok"
+    assert smi_check.summary == "1 GPU, 1 MIG instance"
+
+
+def test_doctor_report_json_is_local_scope(tmp_path: Path) -> None:
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=True,
+            device_count=1,
+            driver_version="560.35.05",
+        ),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout="GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n",
+                )
+            }
+        ),
+        db_path=tmp_path / "gua.db",
+    )
+
+    data = doctor_report_to_dict(report)
+    assert data["scope"] == {"machine": "local"}
+    assert data["read_only"] is True
+    assert data["no_system_changes"] is True
+    plan = data["plan"]
+    checks = data["checks"]
+    assert isinstance(plan, dict)
+    assert isinstance(checks, list)
+    assert plan["mode"] == "host"
+    assert plan["actions"] == []
+    assert [check["id"] for check in checks if isinstance(check, dict)] == [
+        "os",
+        "nvidia_devices",
+        "nvidia_smi",
+        "nvml",
+        "default_db",
+    ]
+    json.dumps(data)
 
 
 def _which(paths: Mapping[str, str]) -> Callable[[str], str | None]:
     def inner(name: str) -> str | None:
         return paths.get(name)
-
-    return inner
-
-
-def _exists(paths: set[str]) -> Callable[[str], bool]:
-    def inner(path: str) -> bool:
-        return path in paths
 
     return inner

@@ -10,17 +10,16 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** main includes read-only `gua doctor` runtime diagnostics and
-> `gua start --dry-run` plan output. Managed start/status/report/stop/uninstall
-> flows are still placeholders. `daemon` still runs on a real NVIDIA host,
-> `demo` runs anywhere (no GPU required), and `report` reads either. The Go
+> **Status:** main is being reset around the bare-metal 1.0 scope.
+> `gua doctor` checks only the current machine. `daemon` records NVML
+> telemetry from the current NVIDIA host, `report` reads the resulting
+> SQLite database, and `demo` runs anywhere with fake telemetry. The Go
 > v0.1.0 implementation remains downloadable at tag `v0.1.0` / branch
 > [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
 ## Install
 
-The recommended install path is PyPI via uv. The package has no core
-runtime dependencies.
+The recommended install path is PyPI via uv.
 
 Requires [uv](https://docs.astral.sh/uv/). In normal online environments,
 uv creates the isolated tool environment and manages the needed Python
@@ -31,24 +30,23 @@ runtime. If Python downloads are disabled by local policy, install Python
 uv tool install gpu-usage-audit
 
 gua doctor
-gua start --dry-run
-gpu-usage-audit demo
+gpu-usage-audit daemon --interval 30s
+gpu-usage-audit report --since 1h --interval 30s
 ```
 
-`gua doctor` and `gua start --dry-run` are intentionally read-only: they
-inspect the local environment, print a recommended runtime plan, and make
-no system, service, cluster, or database changes. Use
-`gpu-usage-audit daemon/report/demo` for the existing compatibility
-workflow.
+`gua doctor` is intentionally read-only. It checks only the current
+machine: OS/kernel/Python, `/dev/nvidia*`, `nvidia-smi -L`, NVML
+load/init/device count/driver version, and the database path the daemon
+would write to. The default is `/tmp/gua.db`; pass `gua doctor --db PATH`
+when you plan to use a different daemon database.
 
 Use `gua doctor --json` for the same report in a machine-readable form.
-The JSON includes local host and cluster diagnostic details such as paths
-and command stderr, so review it before sharing it outside your team.
-`gua doctor` does not need `sudo`; running it as root can change which
-Kubernetes config `kubectl` sees.
+The JSON includes local paths, command stderr, and `nvidia-smi -L` output
+with GPU UUIDs, so review it before sharing it outside your team.
+`gua doctor` does not need `sudo`; run it as the same user that will run
+the daemon.
 
-Available `gua` subcommands: `doctor`, `start`, `status`, `report`,
-`stop`, and `uninstall`.
+Available `gua` subcommands: `doctor`.
 
 Update or remove the installed tool with uv:
 
@@ -58,8 +56,7 @@ uv tool uninstall gpu-usage-audit
 ```
 
 `uv tool uninstall gpu-usage-audit` removes the installed Python tool and
-its `gua` / `gpu-usage-audit` commands. `gua uninstall` is different: it
-is reserved for future runtime cleanup and is a no-op placeholder.
+its `gua` / `gpu-usage-audit` commands.
 
 GitHub Release assets are also available for manual download:
 
@@ -77,7 +74,7 @@ uvx --from "./$WHEEL" gua doctor
 ## What you get
 
 ```
-$ gpu-usage-audit report --db /var/lib/gua/gua.db --since 1h
+$ gpu-usage-audit report --since 1h --interval 30s
 gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 
 §1 Headline
@@ -125,24 +122,39 @@ same every run. Adjust the shape with `--ticks N` and `--interval D`.
 
 ## Real NVIDIA GPU host
 
-On an NVIDIA host, install the `[nvml]` extra and run `daemon`:
+On an NVIDIA host, start with doctor:
 
 ```sh
-# Add the NVML Python package to the tool environment.
-uv tool install --force --with nvidia-ml-py gpu-usage-audit
+gua doctor
+```
 
-gpu-usage-audit daemon --db /tmp/gua.db --interval 30s
+Doctor should show the current machine, visible `/dev/nvidia*` device
+files, `nvidia-smi -L` GPUs, NVML device count, and `/tmp/gua.db` status.
+If it reports that `pynvml` is not installed, add the NVML Python package
+to the tool environment:
+
+```sh
+uv tool install --force --with nvidia-ml-py gpu-usage-audit
+```
+
+Then run the collector:
+
+```sh
+gpu-usage-audit daemon --interval 30s
 ```
 
 Run the report from another shell:
 
 ```sh
-gpu-usage-audit report --db /tmp/gua.db --since 1h --interval 30s
+gpu-usage-audit report --since 1h --interval 30s
 ```
 
 If `--db` is omitted, both `daemon` and `report` use `/tmp/gua.db`.
 `daemon` refuses to start when that database file already exists, so a
-new collection run does not silently append to an old test database.
+new collection run does not silently append to an old test database. If
+`gua doctor` reports that the database already exists, either run
+`gpu-usage-audit report` against the existing data or choose a fresh
+`--db PATH` for the next daemon run.
 
 > The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
 > driver-less host it exits with `NVML Shared Library Not Found`. For a
@@ -277,9 +289,11 @@ to PyPI through Trusted Publishing.
 ## Non-goals
 
 This is a **single-host retrospective** tool. Live dashboards, multi-host
-aggregation, quotas, and pod-name resolution are out of scope — those
-belong above the host layer. If this tool surfaces enough idle-held to
-make scheduling worth solving, see [ocean-all](https://github.com/AI-Ocean).
+aggregation, quotas, Kubernetes cluster scans, Slurm scheduler joins,
+Docker/Podman fallback runtimes, and pod-name resolution are out of scope
+for bare-metal 1.0. Those belong above the host layer. If this tool
+surfaces enough idle-held to make scheduling worth solving, see
+[ocean-all](https://github.com/AI-Ocean).
 
 ## License
 
