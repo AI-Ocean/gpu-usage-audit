@@ -222,7 +222,9 @@ def _cmd_gua_doctor(args: argparse.Namespace) -> int:
 
 def _cmd_gua_start(args: argparse.Namespace) -> int:
     if not args.dry_run:
-        print("gua start: only `gua start --dry-run` is available in this skeleton.", file=sys.stderr)
+        print(
+            "gua start: only `gua start --dry-run` is available in this skeleton.", file=sys.stderr
+        )
         print(_NO_SYSTEM_CHANGES, file=sys.stderr)
         return 2
     return _print_gua_placeholder(
