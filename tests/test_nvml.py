@@ -14,7 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gpu_usage_audit.nvml import NVMLNotAvailableError, NVMLTier, _decode
+from gpu_usage_audit.nvml import (
+    NVMLNotAvailableError,
+    NVMLTier,
+    _decode,
+    nvml_init_error_message,
+)
 
 TS = datetime(2026, 5, 11, 0, 0, 0, tzinfo=UTC)
 
@@ -40,7 +45,7 @@ def test_probe_raises_when_pynvml_missing(monkeypatch: pytest.MonkeyPatch) -> No
     # pynvml 모듈을 sys.modules 에서 가린 채 import 시도 → 실패 경로.
     monkeypatch.setitem(sys.modules, "pynvml", None)
     tier = NVMLTier()
-    with pytest.raises(NVMLNotAvailableError, match="pynvml not installed"):
+    with pytest.raises(NVMLNotAvailableError, match="pynvml is not importable"):
         tier.probe()
 
 
@@ -59,10 +64,15 @@ def _make_mock_pynvml(
     """
 
     class _FakeNVMLError(Exception):
-        pass
+        def __init__(self, message: str = "NVML error", value: int | None = None) -> None:
+            super().__init__(message)
+            self.value = value
 
     nvml = MagicMock()
     nvml.NVMLError = _FakeNVMLError
+    nvml.NVML_ERROR_LIBRARY_NOT_FOUND = 12
+    nvml.NVML_ERROR_DRIVER_NOT_LOADED = 9
+    nvml.NVML_ERROR_LIB_RM_VERSION_MISMATCH = 19
     nvml.nvmlInit = MagicMock(return_value=None)
     nvml.nvmlShutdown = MagicMock(return_value=None)
     nvml.nvmlSystemGetDriverVersion = MagicMock(return_value=driver)
@@ -165,8 +175,29 @@ def test_collect_handles_per_device_running_processes_error(
 
 def test_probe_translates_nvml_error_to_friendly(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _make_mock_pynvml(driver="x", gpus=[])
-    fake.nvmlInit = MagicMock(side_effect=fake.NVMLError("no driver"))
+    fake.nvmlInit = MagicMock(side_effect=fake.NVMLError("localized message", value=9))
     monkeypatch.setitem(sys.modules, "pynvml", fake)
 
     with pytest.raises(NVMLNotAvailableError, match="initialization failed"):
         NVMLTier().probe()
+
+
+@pytest.mark.parametrize(
+    ("code", "raw", "want"),
+    [
+        (12, "localized message", "libnvidia-ml.so.1 was not found"),
+        (19, "localized message", "versions do not match"),
+        (9, "localized message", "driver is not loaded"),
+        (-1, "NVML Shared Library Not Found", "libnvidia-ml.so.1 was not found"),
+        (-1, "other failure", "driver or NVML initialization failed"),
+    ],
+)
+def test_nvml_init_error_message_classifies_common_failures(
+    code: int,
+    raw: str,
+    want: str,
+) -> None:
+    fake = _make_mock_pynvml(driver="x", gpus=[])
+    message = nvml_init_error_message(fake.NVMLError(raw, value=code), fake)
+    assert want in message
+    assert raw in message

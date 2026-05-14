@@ -7,7 +7,7 @@
   version  버전 출력
   help     usage 출력
 
-argparse stdlib 사용 — 의존성 0.
+argparse stdlib 사용. NVML Python binding 은 실제 daemon/doctor probe 시점에 로드.
 """
 
 from __future__ import annotations

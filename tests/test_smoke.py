@@ -50,9 +50,11 @@ def test_daemon_and_report_default_to_tmp_gua_db() -> None:
 def test_pyproject_registers_gua_entry_point() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject.open("rb") as f:
-        scripts = tomllib.load(f)["project"]["scripts"]
+        project = tomllib.load(f)["project"]
+    scripts = project["scripts"]
     assert scripts["gpu-usage-audit"] == "gpu_usage_audit.__main__:main"
     assert scripts["gua"] == "gpu_usage_audit.__main__:gua_main"
+    assert "nvidia-ml-py>=12.535" in project["dependencies"]
 
 
 def test_gua_parser_registers_command_surface() -> None:

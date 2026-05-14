@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from .model import RuntimePlan
-from .nvml import NVMLNotAvailableError, _decode, _load_pynvml
+from .nvml import NVMLNotAvailableError, _decode, _load_pynvml, nvml_init_error_message
 
 type CheckStatus = Literal["ok", "warning", "error", "skipped"]
 type Which = Callable[[str], str | None]
@@ -324,7 +324,7 @@ def probe_nvml() -> NVMLInfo:
             driver_version=_decode(nvml.nvmlSystemGetDriverVersion()),
         )
     except nvml.NVMLError as e:
-        return NVMLInfo(loadable=True, initialized=False, error=str(e))
+        return NVMLInfo(loadable=True, initialized=False, error=nvml_init_error_message(e, nvml))
     except Exception as e:  # pragma: no cover - 플랫폼별 NVML 실패 방어.
         return NVMLInfo(loadable=True, initialized=False, error=str(e))
     finally:
@@ -342,11 +342,17 @@ def check_nvml(info: NVMLInfo) -> DoctorCheck:
         "error": info.error,
     }
     if not info.loadable:
+        error = _one_line(info.error)
+        summary = (
+            error
+            if error.startswith("pynvml is not importable")
+            else f"pynvml is not importable: {error}"
+        )
         return DoctorCheck(
             id="nvml",
             name="NVML",
             status="error",
-            summary=f"pynvml is not installed or loadable: {_one_line(info.error)}",
+            summary=summary,
             details=details,
         )
     if not info.initialized:
@@ -686,11 +692,40 @@ def _host_warnings(facts: DetectionFacts) -> list[str]:
 def _fixes_for(report: DoctorReport) -> list[str]:
     checks = {check.id: check for check in report.checks}
     fixes: list[str] = []
-    if report.plan.blockers:
-        fixes.extend(report.plan.blockers)
+    if checks["nvidia_devices"].status == "error":
+        fixes.append("Run on an NVIDIA host where /dev/nvidia* device files are visible.")
+    smi = checks["nvidia_smi"]
+    if smi.status == "error":
+        if smi.details.get("timed_out") is True:
+            fixes.append(
+                "Investigate the `nvidia-smi -L` timeout; repair the hung driver/kernel "
+                "state and rerun doctor."
+            )
+        elif smi.details.get("found") is False:
+            fixes.append(
+                "Install NVIDIA driver utilities so `nvidia-smi -L` is on PATH and lists "
+                "this host's GPUs."
+            )
+        else:
+            fixes.append(
+                "Repair NVIDIA driver utilities so `nvidia-smi -L` lists this host's GPUs."
+            )
     nvml = checks["nvml"].details
     if nvml.get("loadable") is False:
-        fixes.append("uv tool install --force --with nvidia-ml-py gpu-usage-audit")
+        fixes.append("Reinstall the tool environment: uv tool install --force gpu-usage-audit")
+    elif nvml.get("initialized") is False:
+        fixes.append(
+            "Install or repair the NVIDIA driver so libnvidia-ml.so.1 is available "
+            "and matches the loaded kernel driver; verify with `nvidia-smi -L`."
+        )
+    elif nvml.get("device_count") == 0:
+        fixes.append(
+            "NVML reports zero GPUs; verify that this user can see GPU devices and that "
+            "`nvidia-smi -L` lists the same host GPUs."
+        )
+    database = checks["default_db"]
+    if database.status == "error":
+        fixes.append("Choose a regular writable --db PATH whose parent directory exists.")
     return fixes
 
 

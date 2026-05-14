@@ -83,7 +83,7 @@ def test_build_doctor_report_marks_unsupported_when_nvml_is_missing(tmp_path: Pa
         nvml_probe=lambda: NVMLInfo(
             loadable=False,
             initialized=False,
-            error="pynvml not installed\ninstall extra",
+            error="pynvml is not importable\nreinstall tool",
         ),
         which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
         command_runner=FakeRunner(
@@ -100,10 +100,102 @@ def test_build_doctor_report_marks_unsupported_when_nvml_is_missing(tmp_path: Pa
     assert report.plan.mode == "unsupported"
     assert any("NVML could not be loaded" in blocker for blocker in report.plan.blockers)
     rendered = render_doctor(report)
-    assert "NVML: error, pynvml is not installed or loadable" in rendered
+    assert "NVML: error, pynvml is not importable" in rendered
     assert "Fix:" in rendered
-    assert "uv tool install --force --with nvidia-ml-py gpu-usage-audit" in rendered
+    assert "uv tool install --force gpu-usage-audit" in rendered
     assert "Recommended commands:" not in rendered
+
+
+def test_build_doctor_report_guides_driver_repair_when_nvml_init_fails(tmp_path: Path) -> None:
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=False,
+            error=(
+                "the NVIDIA driver and NVML library versions do not match. "
+                "Detail: Driver/library version mismatch"
+            ),
+        ),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout="GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n",
+                )
+            }
+        ),
+        db_path=tmp_path / "gua.db",
+    )
+
+    rendered = render_doctor(report)
+    assert report.plan.mode == "unsupported"
+    assert "NVML: error, loadable but init failed" in rendered
+    assert "loadable but init failed: the NVIDIA driver" in rendered
+    assert "loadable but init failed: NVML initialization failed" not in rendered
+    assert "Install or repair the NVIDIA driver" in rendered
+    assert "libnvidia-ml.so.1" in rendered
+    assert "uv tool install --force --with nvidia-ml-py" not in rendered
+
+
+def test_build_doctor_report_guides_gpu_visibility_when_nvml_count_is_zero(
+    tmp_path: Path,
+) -> None:
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=True,
+            device_count=0,
+            driver_version="560.35.05",
+        ),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=0,
+                    stdout="GPU 0: NVIDIA A100-SXM4-40GB (UUID: GPU-a)\n",
+                )
+            }
+        ),
+        db_path=tmp_path / "gua.db",
+    )
+
+    rendered = render_doctor(report)
+    assert report.plan.mode == "unsupported"
+    assert "NVML: error, initialized, GPU count=0" in rendered
+    assert "NVML reports zero GPUs" in rendered
+    assert "verify that this user can see GPU devices" in rendered
+
+
+def test_build_doctor_report_guides_timeout_when_nvidia_smi_hangs(tmp_path: Path) -> None:
+    report = build_doctor_report(
+        dev_paths=["/dev/nvidia0", "/dev/nvidiactl"],
+        nvml_probe=lambda: NVMLInfo(
+            loadable=True,
+            initialized=True,
+            device_count=1,
+            driver_version="560.35.05",
+        ),
+        which=_which({"nvidia-smi": "/usr/bin/nvidia-smi"}),
+        command_runner=FakeRunner(
+            {
+                ("nvidia-smi", "-L"): CommandResult(
+                    returncode=124,
+                    stderr="timed out",
+                    timed_out=True,
+                )
+            }
+        ),
+        db_path=tmp_path / "gua.db",
+    )
+
+    rendered = render_doctor(report)
+    assert report.plan.mode == "unsupported"
+    assert "`nvidia-smi -L` timed out" in rendered
+    assert "Investigate the `nvidia-smi -L` timeout" in rendered
+    assert "Install NVIDIA driver utilities" not in rendered
 
 
 def test_default_db_present_warns_without_blocking_host_plan(tmp_path: Path) -> None:
