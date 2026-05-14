@@ -1,6 +1,6 @@
 [project]
 name = "gpu-usage-audit"
-version = "0.4.0"
+version = "0.4.1"
 description = "Single-host daemon that surfaces 'idle-held' NVIDIA GPU memory — the embarrassing category conventional dashboards miss."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -22,7 +22,7 @@ dependencies = []
 # 진짜 GPU 환경에서만 의미 있는 의존성.
 # 설치: `uv pip install gpu-usage-audit[nvml]` 또는
 #       `pip install gpu-usage-audit[nvml]`
-# uv 의 zero-install 동선: `uvx --with nvidia-ml-py gpu-usage-audit daemon ...`
+# uv tool 동선: `uv tool install --with nvidia-ml-py gpu-usage-audit`
 nvml = ["nvidia-ml-py>=12.535"]
 
 [project.scripts]

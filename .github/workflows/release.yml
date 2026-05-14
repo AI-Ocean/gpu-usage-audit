@@ -120,18 +120,23 @@ jobs:
               dist/*.whl dist/*.tar.gz dist/SHA256SUMS
           fi
 
-  # PyPI publish — 사용자가 PyPI 측에 trusted publisher 등록한 뒤 활성화.
-  # https://docs.pypi.org/trusted-publishers/
-  #
-  # publish:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   environment: release
-  #   permissions:
-  #     id-token: write
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: dist
-  #         path: dist
-  #     - uses: pypa/gh-action-pypi-publish@release/v1
+  publish:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gpu-usage-audit
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Remove non-PyPI release assets
+        run: rm -f dist/SHA256SUMS
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
