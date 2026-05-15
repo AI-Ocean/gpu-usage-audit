@@ -1,8 +1,7 @@
-"""데이터 소스 추상 + 학습/테스트용 FakeTier.
+"""GPU telemetry source 추상 + demo/test용 FakeTier.
 
 Tier 는 "한 틱의 GPU 텔레메트리를 어디서 받아오는가" 의 추상. 운영용
-NVMLTier (v0.2.0 후속에서 추가) 와 학습/테스트용 FakeTier 가 같은
-자리에 꽂힌다.
+NVMLTier 와 demo/test용 FakeTier 가 같은 자리에 꽂힌다.
 
 Python 에는 typing.Protocol — Go 의 interface 와 *구조적 호환*
 (implements 선언 불필요). FakeTier 와 NVMLTier 가 같은 모양을 가지면

@@ -234,7 +234,8 @@ Deliver:
 - [x] auto-runtime doctor 구현 제거 또는 축소.
 - [x] `gua doctor`를 local machine / host NVML readiness 전용으로 재작성.
 - [x] k8s/slurm/docker signal 제거.
-- [x] `RuntimePlan`을 host/unsupported 중심으로 축소.
+- [x] auto-runtime `RuntimePlan` 잔재를 제거하고 `gua doctor` 내부의
+  `DoctorPlan`으로 축소.
 - [x] README의 제품 설명을 single-host bare-metal 중심으로 재정렬.
 - [x] `gua start/status/report/stop/uninstall` placeholder 사용자 표면 제거.
 - [x] `gua doctor --db PATH`로 실제 daemon/report DB 경로를 점검.
@@ -313,16 +314,12 @@ gpu-usage-audit report --since 1h --interval 30s
 
 ## Deferred Work
 
-아래는 1.0 GA 전 또는 1.0 이후 다시 검토한다.
+아래는 1.0 GA 전 또는 이후 다시 검토할 수 있는 운영 품질 항목이다. Kubernetes,
+Slurm, Docker/Podman, scheduler allocation, managed runtime 같은 1.0 이후
+제품 확장은 현재 코드베이스와 프로젝트 문서에서 제거했다. 다시 진행하려면 새
+proposal로 시작한다.
 
 - `nvidia-ml-py` upper bound 정책 (`>=12.535,<13` 같은 known-good range 여부).
 - `NVMLInfo.failure_kind` 같은 구조적 실패 타입 도입.
 - unsupported text output에 `Blockers:` 섹션을 별도로 노출할지 결정.
 - raw NVML detail의 redact 옵션 또는 JSON 필드 분리.
-- Kubernetes current-node 진단.
-- GPU Operator staged NVML path.
-- Slurm allocation context.
-- Docker/Podman fallback collector.
-- scheduler allocation-aware report.
-- DB schema v2.
-- managed `gua start/status/stop/uninstall`.
