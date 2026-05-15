@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 - 2026-05-15
 
 - Made `gua` the documented command surface for daemon, report, demo, and doctor output.
 - Made `gua daemon` start the collector in the background by default, with

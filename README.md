@@ -64,8 +64,8 @@ its `gua` / `gpu-usage-audit` commands.
 GitHub Release assets are also available for manual download:
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.0.0"
-WHEEL="gpu_usage_audit-1.0.0-py3-none-any.whl"
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.0.1"
+WHEEL="gpu_usage_audit-1.0.1-py3-none-any.whl"
 
 curl -fsSLO "$BASE/$WHEEL"
 curl -fsSLO "$BASE/SHA256SUMS"
