@@ -21,6 +21,8 @@ from gpu_usage_audit.__main__ import (
     DEFAULT_DB_PATH,
     DISPLAY_COMMAND_ENV,
     _duration,
+    _pid_is_managed_daemon,
+    _read_proc_cmdline,
     build_gua_parser,
     build_parser,
     gua_main,
@@ -322,6 +324,76 @@ def test_gua_status_and_stop_are_idempotent_without_pid_file(
     assert "not running" in capsys.readouterr().out
 
 
+def test_gua_status_removes_live_pid_that_is_not_gua_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pid_file = tmp_path / "gua.pid"
+    pid_file.write_text("4242\n", encoding="utf-8")
+
+    monkeypatch.setattr("gpu_usage_audit.__main__._pid_alive", lambda _pid: True)
+    monkeypatch.setattr("gpu_usage_audit.__main__._pid_is_managed_daemon", lambda _pid: False)
+
+    rc = gua_main(["status", "--pid-file", str(pid_file)])
+
+    assert rc == 0
+    assert not pid_file.exists()
+    out = capsys.readouterr().out
+    assert "not running" in out
+    assert "belongs to another process" in out
+
+
+def test_gua_stop_does_not_signal_live_pid_that_is_not_gua_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pid_file = tmp_path / "gua.pid"
+    pid_file.write_text("4242\n", encoding="utf-8")
+    kill_calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr("gpu_usage_audit.__main__._pid_alive", lambda _pid: True)
+    monkeypatch.setattr("gpu_usage_audit.__main__._pid_is_managed_daemon", lambda _pid: False)
+    monkeypatch.setattr(
+        "gpu_usage_audit.__main__.os.kill",
+        lambda pid, sig: kill_calls.append((pid, sig)),
+    )
+
+    rc = gua_main(["stop", "--pid-file", str(pid_file)])
+
+    assert rc == 0
+    assert kill_calls == []
+    assert not pid_file.exists()
+    out = capsys.readouterr().out
+    assert "not running" in out
+    assert "belongs to another process" in out
+
+
+@pytest.mark.parametrize(
+    ("argv", "want"),
+    [
+        ([sys.executable, "-m", "gpu_usage_audit", "daemon", "--db", "/tmp/gua.db"], True),
+        ([sys.executable, "-m", "gpu_usage_audit", "report"], False),
+        ([sys.executable, "-m", "other_module", "daemon"], False),
+        (["gua", "daemon", "--foreground"], False),
+        ([sys.executable, "-m"], False),
+        ([], False),
+    ],
+)
+def test_pid_is_managed_daemon_matches_background_spawn_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    want: bool,
+) -> None:
+    monkeypatch.setattr("gpu_usage_audit.__main__._read_proc_cmdline", lambda _pid: argv)
+    assert _pid_is_managed_daemon(4242) is want
+
+
+def test_read_proc_cmdline_returns_empty_for_missing_pid() -> None:
+    assert _read_proc_cmdline(999_999_999) == []
+
+
 def _fake_doctor_report(*, db_path: str | Path = DEFAULT_DB_PATH) -> DoctorReport:
     return DoctorReport(
         generated_at=datetime(2026, 5, 14, 0, 0, tzinfo=UTC),
@@ -397,7 +469,13 @@ def test_demo_command_records_and_prints_report(
     captured = capsys.readouterr()
     assert rc == 0
     # §1~§5 다 등장.
-    for section in ("§1 Headline", "§2 Waste", "§3 Per-GPU", "§4 Top identities", "§5"):
+    for section in (
+        "§1 Headline",
+        "§2 Idle capacity",
+        "§3 Per-GPU",
+        "§4 Top identities",
+        "§5",
+    ):
         assert section in captured.out, f"{section} not in demo output"
     # DB 파일 생성됐는지.
     assert db_path.exists()

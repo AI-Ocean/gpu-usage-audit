@@ -26,9 +26,9 @@ from gpu_usage_audit.report import (
     load_headline,
     load_heatmap,
     load_host,
+    load_idle_capacity,
     load_per_gpu,
     load_top_identities,
-    load_waste,
 )
 
 INTERVAL = timedelta(seconds=10)
@@ -138,14 +138,16 @@ def test_load_headline_cutoff_past_all(db_loaded: sqlite3.Connection) -> None:
     assert h.samples == 0
 
 
-# ── load_waste ──────────────────────────────────────────────────
+# ── load_idle_capacity ──────────────────────────────────────────
 
 
-def test_load_waste(db_loaded: sqlite3.Connection) -> None:
-    w = load_waste(db_loaded, BASE, INTERVAL)
-    assert w.samples == 8
-    assert _close(w.idle_gpu_hours, 6 * 10 / 3600)
-    assert _close(w.equiv_unused, 1.5)
+def test_load_idle_capacity(db_loaded: sqlite3.Connection) -> None:
+    idle_capacity = load_idle_capacity(db_loaded, BASE, INTERVAL)
+    assert idle_capacity.samples == 8
+    assert _close(idle_capacity.idle_held_gpu_hours, 4 * 10 / 3600)
+    assert _close(idle_capacity.truly_idle_gpu_hours, 2 * 10 / 3600)
+    assert _close(idle_capacity.idle_held_equiv_gpus, 1.0)
+    assert _close(idle_capacity.truly_idle_equiv_gpus, 0.5)
 
 
 # ── load_per_gpu ────────────────────────────────────────────────
@@ -177,9 +179,38 @@ def test_load_top_identities(db_loaded: sqlite3.Connection) -> None:
     assert bob.identity == "bob"
     assert _close(bob.gpu_hours, 4 * 10 / 3600)
     assert _close(bob.idle_held, 1.0)
+    assert bob.samples == 4
     assert alice.identity == "alice"
     assert _close(alice.gpu_hours, 2 * 10 / 3600)
     assert _close(alice.idle_held, 0.0)
+    assert alice.samples == 2
+
+
+def test_load_top_identities_collapses_same_identity_on_same_gpu_tick(tmp_path: Path) -> None:
+    conn = open_db(tmp_path / "top-collapse.db")
+    try:
+        write_snapshot(
+            conn,
+            BASE,
+            _fixture_host(),
+            Snapshot(
+                gpus=[GPUSample(uuid="GPU-0", util_pct=2)],
+                procs=[
+                    ProcSample(gpu_uuid="GPU-0", pid=100, mem_used_mb=70000, loginuid_user="alice"),
+                    ProcSample(gpu_uuid="GPU-0", pid=101, mem_used_mb=200, loginuid_user="alice"),
+                ],
+            ),
+        )
+
+        rows = load_top_identities(conn, BASE, INTERVAL)
+        assert len(rows) == 1
+        alice = rows[0]
+        assert alice.identity == "alice"
+        assert alice.samples == 1
+        assert _close(alice.gpu_hours, 10 / 3600)
+        assert _close(alice.idle_held, 1.0)
+    finally:
+        conn.close()
 
 
 # ── load_heatmap ────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""§1~§5 report 렌더링. Go v0.1.0 의 renderHeadline/Waste/PerGPU/Top/Heatmap 동등.
+"""§1~§5 report 렌더링.
 
 색 의존성 회피 — TTY/isatty 토글 없이 *글자 자체* (█/▒/░) 로 세 분류를
 시각적으로 구분. 파일 redirect 시에도 출력이 깨끗.
@@ -13,7 +13,7 @@ from datetime import timedelta
 from typing import TextIO
 
 from .model import HostRow
-from .report import Headline, HeatmapCell, PerGPU, TopIdentity, Waste
+from .report import Headline, HeatmapCell, IdleCapacity, PerGPU, TopIdentity
 
 # 카테고리별로 *다른 글자* 를 써서 색깔 없이도 시각적 구분이 되게.
 GLYPH_ACTIVE = "█"  # 가장 진한 블록
@@ -48,6 +48,11 @@ def render_headline(
         print(f"gua — {host.hostname} ({ctx})  Window: {since}\n", file=w)
 
     print("§1 Headline", file=w)
+    print("  basis: one sample = one GPU card at one daemon tick", file=w)
+    print(
+        "  rules: active >=10% util; idle-held <10% util with >100 MB process memory",
+        file=w,
+    )
     if h.samples == 0:
         print("  (no samples in window)", file=w)
         return
@@ -63,15 +68,21 @@ def render_headline(
     print(f"  ({h.samples} samples)", file=w)
 
 
-def render_waste(w: TextIO, waste: Waste) -> None:
+def render_idle_capacity(w: TextIO, idle_capacity: IdleCapacity) -> None:
     print(file=w)
-    print("§2 Waste", file=w)
-    if waste.samples == 0:
+    print("§2 Idle capacity", file=w)
+    print("  converted from card-ticks to GPU-hours using the report --interval", file=w)
+    if idle_capacity.samples == 0:
         print("  (no samples in window)", file=w)
         return
     print(
-        f"  ~{waste.idle_gpu_hours:.2f} GPU-hours idle, "
-        f"~{waste.equiv_unused:.2f} GPUs equivalently unused",
+        f"  idle-held: ~{idle_capacity.idle_held_gpu_hours:.2f} GPU-hours, "
+        f"~{idle_capacity.idle_held_equiv_gpus:.2f} GPUs equivalently unavailable",
+        file=w,
+    )
+    print(
+        f"  truly-idle: ~{idle_capacity.truly_idle_gpu_hours:.2f} GPU-hours, "
+        f"~{idle_capacity.truly_idle_equiv_gpus:.2f} GPUs equivalently free",
         file=w,
     )
 
@@ -79,6 +90,7 @@ def render_waste(w: TextIO, waste: Waste) -> None:
 def render_per_gpu(w: TextIO, rows: list[PerGPU]) -> None:
     print(file=w)
     print("§3 Per-GPU", file=w)
+    print("  per-card share of samples in the same three states", file=w)
     if not rows:
         print("  (no GPU cards in window)", file=w)
         return
@@ -94,13 +106,14 @@ def render_per_gpu(w: TextIO, rows: list[PerGPU]) -> None:
 def render_top_identities(w: TextIO, rows: list[TopIdentity]) -> None:
     print(file=w)
     print("§4 Top identities", file=w)
+    print("  one identity counts once per GPU/tick after its processes are summed", file=w)
     if not rows:
         print("  (no processes in window)", file=w)
         return
-    print(f"  {'identity':<20} {'gpu-hours':>10}  {'idle-held':>10}", file=w)
+    print(f"  {'identity':<20} {'gpu-hours':>10}  {'idle-held':>10}  {'samples':>8}", file=w)
     for r in rows:
         print(
-            f"  {r.identity:<20} {r.gpu_hours:>10.2f}  {r.idle_held * 100:>9.1f}%",
+            f"  {r.identity:<20} {r.gpu_hours:>10.2f}  {r.idle_held * 100:>9.1f}%  {r.samples:>8}",
             file=w,
         )
 
@@ -108,6 +121,7 @@ def render_top_identities(w: TextIO, rows: list[TopIdentity]) -> None:
 def render_heatmap(w: TextIO, cells: list[HeatmapCell]) -> None:
     print(file=w)
     print("§5 Time-of-day heatmap (UTC)", file=w)
+    print("  darker means higher active share; blank means no samples", file=w)
     if not cells:
         print("  (no samples in window)", file=w)
         return

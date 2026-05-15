@@ -16,11 +16,11 @@ from gpu_usage_audit.render import (
     GLYPH_TRULY_IDLE,
     render_headline,
     render_heatmap,
+    render_idle_capacity,
     render_per_gpu,
     render_top_identities,
-    render_waste,
 )
-from gpu_usage_audit.report import Headline, HeatmapCell, PerGPU, TopIdentity, Waste
+from gpu_usage_audit.report import Headline, HeatmapCell, IdleCapacity, PerGPU, TopIdentity
 
 
 def _render(fn, *args, **kwargs) -> str:  # type: ignore[no-untyped-def]
@@ -74,15 +74,28 @@ def test_render_headline_no_host_row() -> None:
 # ── §2 ──────────────────────────────────────────────────────────
 
 
-def test_render_waste() -> None:
-    out = _render(render_waste, Waste(idle_gpu_hours=0.43, equiv_unused=2.53, samples=51))
-    assert "§2 Waste" in out
-    assert "0.43" in out
-    assert "2.53" in out
+def test_render_idle_capacity() -> None:
+    out = _render(
+        render_idle_capacity,
+        IdleCapacity(
+            idle_held_gpu_hours=0.31,
+            truly_idle_gpu_hours=0.12,
+            idle_held_equiv_gpus=1.53,
+            truly_idle_equiv_gpus=1.00,
+            samples=51,
+        ),
+    )
+    assert "§2 Idle capacity" in out
+    assert "idle-held" in out
+    assert "truly-idle" in out
+    assert "0.31" in out
+    assert "1.53" in out
+    assert "0.12" in out
+    assert "1.00" in out
 
 
-def test_render_waste_empty() -> None:
-    out = _render(render_waste, Waste())
+def test_render_idle_capacity_empty() -> None:
+    out = _render(render_idle_capacity, IdleCapacity())
     assert "(no samples in window)" in out
 
 
@@ -113,14 +126,15 @@ def test_render_top_identities() -> None:
     out = _render(
         render_top_identities,
         [
-            TopIdentity(identity="bob", gpu_hours=0.42, idle_held=1.0),
-            TopIdentity(identity="alice", gpu_hours=0.28, idle_held=0.0),
+            TopIdentity(identity="bob", gpu_hours=0.42, idle_held=1.0, samples=5),
+            TopIdentity(identity="alice", gpu_hours=0.28, idle_held=0.0, samples=3),
         ],
     )
     assert "§4 Top identities" in out
     assert "bob" in out
     assert "alice" in out
     assert "100.0%" in out and "0.0%" in out
+    assert "samples" in out
 
 
 def test_render_top_identities_empty() -> None:

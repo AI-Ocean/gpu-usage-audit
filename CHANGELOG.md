@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Hardened `gua status` and `gua stop` so stale PID files do not act on
+  unrelated live processes.
+- Clarified report output by explaining sample units, classification rules,
+  interval-dependent GPU-hours, and heatmap density.
+- Split §2 from generic "Waste" into idle-held capacity and truly-idle
+  capacity. The equivalent-GPU figures now use GPUs present in the report
+  window instead of the entire database.
+- Made §4 Top identities aggregate by identity/GPU/tick before converting to
+  GPU-hours, so reports may show lower per-user GPU-hours when one user has
+  multiple processes on the same GPU at the same tick.
+- Warn when NVML process-list visibility is unavailable for a GPU.
+
 ## 1.0.1 - 2026-05-15
 
 - Made `gua` the documented command surface for daemon, report, demo, and doctor output.
