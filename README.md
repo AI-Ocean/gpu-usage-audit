@@ -10,7 +10,7 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** main tracks the bare-metal 1.0 scope.
+> **Status:** bare-metal 1.0 release candidate.
 > `gua doctor` checks only the current machine. `daemon` records NVML
 > telemetry from the current NVIDIA host, `report` reads the resulting
 > SQLite database, and `demo` runs anywhere with fake telemetry. The Go
@@ -61,8 +61,8 @@ its `gua` / `gpu-usage-audit` commands.
 GitHub Release assets are also available for manual download:
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v0.4.1"
-WHEEL="gpu_usage_audit-0.4.1-py3-none-any.whl"
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.0.0"
+WHEEL="gpu_usage_audit-1.0.0-py3-none-any.whl"
 
 curl -fsSLO "$BASE/$WHEEL"
 curl -fsSLO "$BASE/SHA256SUMS"

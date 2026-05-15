@@ -31,9 +31,9 @@
 - PR B: implemented in PR #10.
 - Post-1.0 cleanup: 완료. auto-runtime 문서와 `RuntimePlan`/env detection
   잔재를 제거했다.
-- PR C: 구현 대부분은 README/CLI에 반영된 것으로 보이나 계획서에는 아직 완료
-  상태가 없다.
-- PR D: 대기. 현재 버전은 `0.4.1`이며 1.0 release bump는 아직 하지 않았다.
+- PR C: implemented in release prep.
+- PR D: 진행 중. 현재 버전은 `1.0.0`으로 bump했고, local build/wheel smoke는
+  통과했다. NVIDIA host acceptance와 tag publish가 남았다.
 
 마지막 로컬 검증은 모두 통과했다.
 
@@ -42,13 +42,14 @@ uv run ruff check
 uv run ruff format --check
 uv run mypy
 uv run pytest
-uv build --out-dir /tmp/gua-dist-prune-20260515
-bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-prune-20260515/gpu_usage_audit-0.4.1-py3-none-any.whl
+uv build --out-dir /tmp/gua-dist-1.0.0-prep
+bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-1.0.0-prep/gpu_usage_audit-1.0.0-py3-none-any.whl
+env GITHUB_REF_NAME=v1.0.0 uv run python scripts/check-tag-version.py
 ```
 
 cleanup 후 결과는 `pytest` 107 passed, `mypy` 25 source files, `ruff format`
-26 files 기준이다. `/tmp/gua-dist-prune-20260515`로 build와 wheel smoke도
-통과했다.
+26 files 기준이다. release prep에서는 `/tmp/gua-dist-1.0.0-prep`로 build와
+wheel smoke를 확인한다.
 
 ## 주의할 점
 
@@ -61,18 +62,16 @@ cleanup 후 결과는 `pytest` 107 passed, `mypy` 25 source files, `ruff format`
   container/k8s runtime 감지를 하지 않는다.
 - PR C를 닫기 전에 문서만 보고 끝내지 말고, 기존 DB 존재/부재 error UX가 README와
   CLI 출력에서 서로 같은 메시지를 주는지 확인한다.
-- PR D에서 tag를 만들기 전에는 `scripts/check-tag-version.py`가 tag와
-  `pyproject.toml` version을 강하게 비교한다.
+- PR D에서 tag를 만들기 전에는 `env GITHUB_REF_NAME=v1.0.0 uv run python
+  scripts/check-tag-version.py`가 통과해야 한다.
 
 ## 다음 세션 추천 순서
 
 1. `git status --short`로 사용자 변경 여부를 먼저 확인한다.
 2. `projects/bare-metal-1.0/status.ko.md`를 읽고 마지막 검증 이후 차이를 확인한다.
-3. PR C deliverable을 README/CLI와 대조한다.
-4. PR C가 충분하면 `plan.ko.md`와 `status.ko.md`를 갱신한다.
-5. PR D로 넘어가면 version bump, README status 문구, release notes 정책을 먼저
-   확정한다.
-6. 릴리스 전에는 아래를 다시 실행한다.
+3. NVIDIA host acceptance를 실행한다.
+4. release prep PR을 main에 머지한다.
+5. `v1.0.0` tag를 push하기 전 아래를 다시 실행한다.
 
 ```sh
 uv run ruff check
@@ -81,4 +80,5 @@ uv run mypy
 uv run pytest
 uv build
 bash scripts/smoke-dist-wheel.sh
+env GITHUB_REF_NAME=v1.0.0 uv run python scripts/check-tag-version.py
 ```

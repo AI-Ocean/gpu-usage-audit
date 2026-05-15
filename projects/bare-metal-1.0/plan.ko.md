@@ -267,6 +267,8 @@ Working state:
 
 ### PR C: Bare Metal Runbook Hardening
 
+Status: implemented in release prep.
+
 Deliver:
 
 - `/tmp/gua.db` 기본 flow 문서 강화.
@@ -280,13 +282,15 @@ Working state:
 
 ### PR D: 1.0 Release Prep
 
+Status: in progress.
+
 Deliver:
 
-- version bump.
-- README status 갱신.
-- changelog/release notes.
-- build + wheel smoke.
-- GitHub Release + PyPI publish.
+- [x] version bump.
+- [x] README status 갱신.
+- [x] changelog/release notes.
+- [x] build + wheel smoke.
+- [ ] GitHub Release + PyPI publish.
 
 Working state:
 
