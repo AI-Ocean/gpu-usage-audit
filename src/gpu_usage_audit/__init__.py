@@ -1,8 +1,7 @@
 """gpu-usage-audit — surfaces idle-held NVIDIA GPU memory.
 
-이 패키지의 외부 API 는 아직 *진행 중*. v0.2.0 알파 단계에서
-Go v0.1.0 의 5-section report 를 Python 으로 옮기는 작업이 진행 중.
-v0.2.0 stable 까지는 import path 가 바뀔 수 있음.
+1.0 scope는 단일 로컬 베어메탈 NVIDIA 호스트의 NVML telemetry를 SQLite에
+기록하고, active / idle-held / truly-idle retrospective report를 출력하는 것.
 """
 
 # 런타임에서 버전 노출. pyproject.toml 의 [project.version] 과 동기 유지.

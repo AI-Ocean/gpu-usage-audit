@@ -22,11 +22,15 @@
 - `daemon`은 기존 DB 파일이 있으면 실패한다.
 - `report`는 DB 파일이 없으면 실패한다.
 - `gua`의 사용자 표면은 `doctor`만 남긴다.
+- auto-runtime proposal/project 문서는 삭제했다. Kubernetes/Slurm/Docker/Podman
+  확장을 다시 시작하려면 새 proposal로 시작한다.
 
 ## 현재 상태
 
 - PR A: implemented in PR #9.
 - PR B: implemented in PR #10.
+- Post-1.0 cleanup: 완료. auto-runtime 문서와 `RuntimePlan`/env detection
+  잔재를 제거했다.
 - PR C: 구현 대부분은 README/CLI에 반영된 것으로 보이나 계획서에는 아직 완료
   상태가 없다.
 - PR D: 대기. 현재 버전은 `0.4.1`이며 1.0 release bump는 아직 하지 않았다.
@@ -34,13 +38,17 @@
 마지막 로컬 검증은 모두 통과했다.
 
 ```sh
-uv run pytest
 uv run ruff check
 uv run ruff format --check
 uv run mypy
-uv build --out-dir /tmp/gua-dist-check-20260515
-bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-check-20260515/gpu_usage_audit-0.4.1-py3-none-any.whl
+uv run pytest
+uv build --out-dir /tmp/gua-dist-prune-20260515
+bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-prune-20260515/gpu_usage_audit-0.4.1-py3-none-any.whl
 ```
+
+cleanup 후 결과는 `pytest` 107 passed, `mypy` 25 source files, `ruff format`
+26 files 기준이다. `/tmp/gua-dist-prune-20260515`로 build와 wheel smoke도
+통과했다.
 
 ## 주의할 점
 
@@ -49,6 +57,8 @@ bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-check-20260515/gpu_usage_audit-0.
 - `/tmp/gua.db`가 이미 존재한다. 기본 경로 daemon 테스트는 이 파일 때문에 실패하는
   것이 기대 동작이다.
 - 실제 1.0 acceptance는 NVIDIA 베어메탈 호스트에서만 닫을 수 있다.
+- `daemon`과 `demo`는 host row의 `env_kind`를 항상 `"bare"`로 기록한다. 1.0은
+  container/k8s runtime 감지를 하지 않는다.
 - PR C를 닫기 전에 문서만 보고 끝내지 말고, 기존 DB 존재/부재 error UX가 README와
   CLI 출력에서 서로 같은 메시지를 주는지 확인한다.
 - PR D에서 tag를 만들기 전에는 `scripts/check-tag-version.py`가 tag와

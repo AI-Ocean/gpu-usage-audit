@@ -62,8 +62,6 @@ def test_build_doctor_report_checks_only_local_bare_metal(tmp_path: Path) -> Non
     ]
     assert runner.calls == [("nvidia-smi", "-L")]
     assert report.plan.mode == "host"
-    assert report.plan.telemetry == "nvml"
-    assert report.plan.scheduler == "none"
 
     rendered = render_doctor(report)
     assert "Scope:\n  machine: local" in rendered
@@ -324,7 +322,8 @@ def test_doctor_report_json_is_local_scope(tmp_path: Path) -> None:
     assert isinstance(plan, dict)
     assert isinstance(checks, list)
     assert plan["mode"] == "host"
-    assert plan["actions"] == []
+    assert "scheduler" not in plan
+    assert "actions" not in plan
     assert [check["id"] for check in checks if isinstance(check, dict)] == [
         "os",
         "nvidia_devices",

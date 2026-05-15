@@ -34,7 +34,6 @@ from .doctor import (
     doctor_report_to_dict,
     render_doctor,
 )
-from .env import detect_env_kind
 from .identity import system_user_lookup
 from .model import HostMeta
 from .nvml import NVMLNotAvailableError, NVMLTier
@@ -64,6 +63,7 @@ _DURATION_UNITS = {
     "d": "days",
 }
 DEFAULT_DB_PATH = DOCTOR_DEFAULT_DB_PATH
+LOCAL_ENV_KIND = "bare"
 
 
 def _duration(s: str) -> timedelta:
@@ -225,7 +225,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return 1
         host = HostMeta(
             hostname=socket.gethostname() or "unknown",
-            env_kind=detect_env_kind("/proc"),
+            env_kind=LOCAL_ENV_KIND,
             driver_version=driver,
             first_seen=datetime.now(UTC),
         )
@@ -295,7 +295,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         driver = tier.probe()
         host = HostMeta(
             hostname=socket.gethostname() or "unknown",
-            env_kind=detect_env_kind("/proc"),
+            env_kind=LOCAL_ENV_KIND,
             driver_version=driver,
             first_seen=datetime.now(UTC),
         )

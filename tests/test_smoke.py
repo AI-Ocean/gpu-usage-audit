@@ -24,8 +24,7 @@ from gpu_usage_audit.__main__ import (
     gua_main,
     main,
 )
-from gpu_usage_audit.doctor import DoctorCheck, DoctorReport
-from gpu_usage_audit.model import RuntimePlan
+from gpu_usage_audit.doctor import DoctorCheck, DoctorPlan, DoctorReport
 
 
 def test_version_string_is_nonempty() -> None:
@@ -207,11 +206,8 @@ def _fake_doctor_report(*, db_path: str | Path = DEFAULT_DB_PATH) -> DoctorRepor
                 details={"path": str(db_path), "is_default": Path(db_path) == DEFAULT_DB_PATH},
             ),
         ],
-        plan=RuntimePlan(
+        plan=DoctorPlan(
             mode="host",
-            telemetry="nvml",
-            scheduler="none",
-            confidence="high",
             reasons=["Local NVML initialized and sees 2 GPU(s)."],
         ),
     )

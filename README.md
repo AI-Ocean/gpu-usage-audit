@@ -10,7 +10,7 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** main is being reset around the bare-metal 1.0 scope.
+> **Status:** main tracks the bare-metal 1.0 scope.
 > `gua doctor` checks only the current machine. `daemon` records NVML
 > telemetry from the current NVIDIA host, `report` reads the resulting
 > SQLite database, and `demo` runs anywhere with fake telemetry. The Go

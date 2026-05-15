@@ -16,10 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from .model import RuntimePlan
 from .nvml import NVMLNotAvailableError, _decode, _load_pynvml, nvml_init_error_message
 
 type CheckStatus = Literal["ok", "warning", "error", "skipped"]
+type ReadinessMode = Literal["host", "unsupported"]
 type Which = Callable[[str], str | None]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 3.0
@@ -115,10 +115,20 @@ class DetectionFacts:
 
 
 @dataclass(slots=True)
+class DoctorPlan:
+    """`gua doctor` 의 로컬 베어메탈 readiness 판정."""
+
+    mode: ReadinessMode
+    reasons: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class DoctorReport:
     generated_at: datetime
     checks: list[DoctorCheck]
-    plan: RuntimePlan
+    plan: DoctorPlan
 
 
 def run_command(cmd: Sequence[str], timeout: float) -> CommandResult:
@@ -173,7 +183,7 @@ def build_doctor_report(
         nvml=nvml_info,
         database=database_info,
     )
-    plan = select_runtime_plan(facts)
+    plan = select_doctor_plan(facts)
     return DoctorReport(
         generated_at=generated_at,
         checks=[
@@ -446,15 +456,12 @@ def probe_default_db(db_path: str | Path = DEFAULT_DB_PATH) -> tuple[DatabaseInf
     )
 
 
-def select_runtime_plan(facts: DetectionFacts) -> RuntimePlan:
+def select_doctor_plan(facts: DetectionFacts) -> DoctorPlan:
     blockers = _unsupported_blockers(facts)
     warnings = _host_warnings(facts)
     if blockers:
-        return RuntimePlan(
+        return DoctorPlan(
             mode="unsupported",
-            telemetry="nvml",
-            scheduler="none",
-            confidence="high",
             reasons=[
                 "This command only audits the local machine, and host readiness is incomplete."
             ],
@@ -462,21 +469,14 @@ def select_runtime_plan(facts: DetectionFacts) -> RuntimePlan:
             warnings=warnings,
         )
 
-    return RuntimePlan(
+    return DoctorPlan(
         mode="host",
-        telemetry="nvml",
-        scheduler="none",
-        confidence="high",
         reasons=[
             f"Local NVML initialized and sees {facts.nvml.device_count} GPU(s).",
             "`nvidia-smi -L` lists GPUs on this machine.",
             "The 1.0 workflow writes local NVML samples to a local SQLite database.",
         ],
         warnings=warnings,
-        required_privileges=[
-            "permission to read NVML GPU and process state",
-            "write access to the collector database path",
-        ],
     )
 
 
@@ -535,7 +535,7 @@ def doctor_report_to_dict(report: DoctorReport) -> dict[str, object]:
         "read_only": True,
         "no_system_changes": True,
         "checks": [doctor_check_to_dict(check) for check in report.checks],
-        "plan": runtime_plan_to_dict(report.plan),
+        "plan": doctor_plan_to_dict(report.plan),
     }
     if report.plan.mode == "host":
         data["recommended_commands"] = _recommended_commands_for(report)
@@ -552,18 +552,12 @@ def doctor_check_to_dict(check: DoctorCheck) -> dict[str, object]:
     }
 
 
-def runtime_plan_to_dict(plan: RuntimePlan) -> dict[str, object]:
+def doctor_plan_to_dict(plan: DoctorPlan) -> dict[str, object]:
     return {
         "mode": plan.mode,
-        "telemetry": plan.telemetry,
-        "scheduler": plan.scheduler,
-        "confidence": plan.confidence,
         "reasons": plan.reasons,
         "blockers": plan.blockers,
         "warnings": plan.warnings,
-        "required_privileges": plan.required_privileges,
-        # schema_version=1 호환을 위해 RuntimePlan 모델 필드 없이 빈 리스트를 유지한다.
-        "actions": [],
     }
 
 

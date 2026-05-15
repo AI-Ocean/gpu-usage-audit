@@ -10,14 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
 
 from .classify import Class
-
-RuntimeMode = Literal["host", "unsupported"]
-TelemetrySource = Literal["nvml"]
-SchedulerSource = Literal["none"]
-PlanConfidence = Literal["high", "medium", "low"]
 
 
 @dataclass(slots=True)
@@ -58,29 +52,15 @@ class Snapshot:
 class HostMeta:
     """데몬 startup 에 한 번 결정하고 *수명 내내 들고 다니는* 호스트 컨텍스트.
 
-    hostname/env_kind/driver_version 은 데몬 lifetime 동안 변하지 않는다는
-    가정. first_seen 은 host row 의 immutable 필드 (재시작 후에도 첫
-    INSERT 시각 보존), last_seen 은 매 틱 갱신.
+    1.0은 로컬 베어메탈 호스트 전용이므로 env_kind 는 "bare" 로 기록한다.
+    hostname/env_kind/driver_version 은 데몬 lifetime 동안 변하지 않는다는 가정.
+    first_seen 은 host row 의 immutable 필드, last_seen 은 매 틱 갱신.
     """
 
     hostname: str
     env_kind: str
     driver_version: str
     first_seen: datetime
-
-
-@dataclass(slots=True)
-class RuntimePlan:
-    """`gua doctor` 가 만든 로컬 호스트 readiness 판정."""
-
-    mode: RuntimeMode
-    telemetry: TelemetrySource
-    scheduler: SchedulerSource
-    confidence: PlanConfidence
-    reasons: list[str] = field(default_factory=list)
-    blockers: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    required_privileges: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
