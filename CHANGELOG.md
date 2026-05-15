@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Made `gua` the documented command surface for daemon, report, demo, and doctor output.
+- Made `gua daemon` start the collector in the background by default, with
+  `gua daemon --foreground` available for systemd and debugging.
+- Added `gua start`, `gua status`, and `gua stop` for background collector management.
+
 ## 1.0.0 - 2026-05-15
 
 Bare-metal 1.0 narrows `gpu-usage-audit` to one clear workflow: inspect the

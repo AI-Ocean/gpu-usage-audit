@@ -12,12 +12,14 @@ import sys
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from gpu_usage_audit import __version__
 from gpu_usage_audit.__main__ import (
     DEFAULT_DB_PATH,
+    DISPLAY_COMMAND_ENV,
     _duration,
     build_gua_parser,
     build_parser,
@@ -25,6 +27,7 @@ from gpu_usage_audit.__main__ import (
     main,
 )
 from gpu_usage_audit.doctor import DoctorCheck, DoctorPlan, DoctorReport
+from gpu_usage_audit.nvml import NVMLNotAvailableError
 
 
 def test_version_string_is_nonempty() -> None:
@@ -65,6 +68,10 @@ def test_gua_parser_registers_command_surface() -> None:
     ns = p.parse_args(["doctor", "--db", "/var/lib/gua/gua.db"])
     assert ns.command == "doctor"
     assert ns.db == "/var/lib/gua/gua.db"
+
+    for cmd in ("daemon", "start", "status", "stop", "report", "demo", "version", "help"):
+        ns = p.parse_args([cmd])
+        assert ns.command == cmd
 
 
 def _required_args_for(cmd: str) -> list[str]:
@@ -157,6 +164,124 @@ def test_daemon_refuses_existing_db_before_nvml(
     assert f"{db_path} already exists" in captured.err
 
 
+def test_daemon_does_not_create_db_when_nvml_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "gua.db"
+
+    class FailingTier:
+        def probe(self) -> str:
+            raise NVMLNotAvailableError("NVML unavailable")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.NVMLTier", FailingTier)
+
+    rc = main(["daemon", "--db", str(db_path)])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "NVML unavailable" in captured.err
+    assert not db_path.exists()
+
+
+def test_gua_daemon_background_refuses_existing_db_before_start(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "gua.db"
+    db_path.write_text("existing", encoding="utf-8")
+
+    rc = gua_main(
+        [
+            "daemon",
+            "--db",
+            str(db_path),
+            "--pid-file",
+            str(tmp_path / "gua.pid"),
+            "--log-file",
+            str(tmp_path / "gua.log"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert f"{db_path} already exists" in captured.err
+    assert "gua report" in captured.err
+
+
+def test_gua_daemon_foreground_uses_foreground_daemon_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "gua.db"
+    db_path.write_text("existing", encoding="utf-8")
+
+    rc = gua_main(["daemon", "--foreground", "--db", str(db_path)])
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert f"gua daemon --foreground: {db_path} already exists" in captured.err
+
+
+def test_gua_daemon_background_starts_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pid_file = tmp_path / "gua.pid"
+    log_file = tmp_path / "gua.log"
+    db_path = tmp_path / "gua.db"
+    seen: dict[str, Any] = {}
+
+    class FakeProc:
+        pid = 4242
+
+        def poll(self) -> int | None:
+            return None
+
+    def fake_popen(command: list[str], **kwargs: Any) -> FakeProc:
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("gpu_usage_audit.__main__.time.sleep", lambda _seconds: None)
+
+    rc = gua_main(
+        [
+            "daemon",
+            "--db",
+            str(db_path),
+            "--interval",
+            "200ms",
+            "--pid-file",
+            str(pid_file),
+            "--log-file",
+            str(log_file),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    command = seen["command"]
+    kwargs = seen["kwargs"]
+    assert rc == 0
+    assert pid_file.read_text(encoding="utf-8") == "4242\n"
+    assert command[:3] == [sys.executable, "-m", "gpu_usage_audit"]
+    assert command[3:] == [
+        "daemon",
+        "--db",
+        str(db_path),
+        "--interval",
+        "200ms",
+    ]
+    assert kwargs["env"][DISPLAY_COMMAND_ENV] == "gua daemon --foreground"
+    assert kwargs["start_new_session"] is True
+    assert "started pid 4242" in captured.out
+
+
 def test_report_refuses_missing_db_without_creating_it(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -168,6 +293,33 @@ def test_report_refuses_missing_db_without_creating_it(
     assert rc == 2
     assert f"{db_path} does not exist" in captured.err
     assert not db_path.exists()
+
+
+def test_gua_report_refuses_missing_db_without_creating_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "missing.db"
+
+    rc = gua_main(["report", "--db", str(db_path)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert f"gua report: {db_path} does not exist" in captured.err
+    assert "gua daemon" in captured.err
+    assert not db_path.exists()
+
+
+def test_gua_status_and_stop_are_idempotent_without_pid_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pid_file = tmp_path / "missing.pid"
+
+    assert gua_main(["status", "--pid-file", str(pid_file)]) == 0
+    assert "not running" in capsys.readouterr().out
+
+    assert gua_main(["stop", "--pid-file", str(pid_file)]) == 0
+    assert "not running" in capsys.readouterr().out
 
 
 def _fake_doctor_report(*, db_path: str | Path = DEFAULT_DB_PATH) -> DoctorReport:
@@ -248,6 +400,28 @@ def test_demo_command_records_and_prints_report(
     for section in ("§1 Headline", "§2 Waste", "§3 Per-GPU", "§4 Top identities", "§5"):
         assert section in captured.out, f"{section} not in demo output"
     # DB 파일 생성됐는지.
+    assert db_path.exists()
+
+
+def test_gua_demo_command_records_and_prints_report(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "demo.db"
+    rc = gua_main(
+        [
+            "demo",
+            "--db",
+            str(db_path),
+            "--ticks",
+            "1",
+            "--interval",
+            "10ms",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "§1 Headline" in captured.out
     assert db_path.exists()
 
 

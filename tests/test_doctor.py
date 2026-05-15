@@ -70,6 +70,8 @@ def test_build_doctor_report_checks_only_local_bare_metal(tmp_path: Path) -> Non
     assert "NVML: ok, initialized, GPU count=2, driver 560.35.05" in rendered
     assert "status: absent, ready for a new daemon run" in rendered
     assert "Recommended commands:" in rendered
+    assert "collect: gua daemon --" in rendered
+    assert "report after collecting: gua report --" in rendered
     assert "Kubernetes" not in rendered
     assert "Slurm" not in rendered
     assert "Docker" not in rendered
@@ -257,10 +259,10 @@ def test_custom_db_path_is_rendered_and_shell_quoted(tmp_path: Path) -> None:
     rendered = render_doctor(report)
     quoted = f"'{db_path}'"
     assert f"target: {db_path}" in rendered
-    assert f"collect: gpu-usage-audit daemon --db {quoted} --interval 30s" in rendered
+    assert f"collect: gua daemon --db {quoted} --interval 30s" in rendered
     assert (
-        f"report after collecting: gpu-usage-audit report --db {quoted} --since 1h --interval 30s"
-    ) in rendered
+        f"report after collecting: gua report --db {quoted} --since 1h --interval 30s" in rendered
+    )
 
 
 def test_nvidia_smi_counts_mig_instances(tmp_path: Path) -> None:

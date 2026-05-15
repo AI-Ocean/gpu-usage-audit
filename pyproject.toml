@@ -23,7 +23,7 @@ dependencies = ["nvidia-ml-py>=12.535"]
 nvml = []
 
 [project.scripts]
-# pip / uvx 가 만들 entry point. `uvx gpu-usage-audit ...` 한 줄로 실행.
+# `gua` is the canonical CLI; `gpu-usage-audit` remains as a compatibility alias.
 gpu-usage-audit = "gpu_usage_audit.__main__:main"
 gua = "gpu_usage_audit.__main__:gua_main"
 

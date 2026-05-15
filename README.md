@@ -10,7 +10,7 @@ Jupyter notebook open with an 8 GB tensor on the GPU and went to
 lunch — `nvidia-smi` will show 1% utilization, but the card is
 *unusable* by anyone else. This tool measures that.
 
-> **Status:** bare-metal 1.0 release candidate.
+> **Status:** bare-metal 1.0.
 > `gua doctor` checks only the current machine. `daemon` records NVML
 > telemetry from the current NVIDIA host, `report` reads the resulting
 > SQLite database, and `demo` runs anywhere with fake telemetry. The Go
@@ -30,8 +30,10 @@ runtime. If Python downloads are disabled by local policy, install Python
 uv tool install gpu-usage-audit
 
 gua doctor
-gpu-usage-audit daemon --interval 30s
-gpu-usage-audit report --since 1h --interval 30s
+gua daemon --interval 30s
+gua status
+gua report --since 1h --interval 30s
+gua stop
 ```
 
 `gua doctor` is intentionally read-only. It checks only the current
@@ -46,7 +48,8 @@ with GPU UUIDs, so review it before sharing it outside your team.
 `gua doctor` does not need `sudo`; run it as the same user that will run
 the daemon.
 
-Available `gua` subcommands: `doctor`.
+Available `gua` subcommands: `doctor`, `daemon`, `start`, `status`,
+`stop`, `report`, `demo`, `version`, `help`.
 
 Update or remove the installed tool with uv:
 
@@ -74,8 +77,8 @@ uvx --from "./$WHEEL" gua doctor
 ## What you get
 
 ```
-$ gpu-usage-audit report --since 1h --interval 30s
-gpu-usage-audit — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
+$ gua report --since 1h --interval 30s
+gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 
 §1 Headline
   █████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░
@@ -113,7 +116,7 @@ The `demo` subcommand records 30 ticks of fake telemetry and prints the
 report — all in one process, no second shell needed.
 
 ```sh
-gpu-usage-audit demo
+gua demo
 ```
 
 The bundled `FakeTier` produces a deterministic 5-tick workload —
@@ -146,21 +149,28 @@ can collect real telemetry.
 Then run the collector:
 
 ```sh
-gpu-usage-audit daemon --interval 30s
+gua daemon --interval 30s
+gua status
 ```
 
-Run the report from another shell:
+Run the report:
 
 ```sh
-gpu-usage-audit report --since 1h --interval 30s
+gua report --since 1h --interval 30s
+```
+
+Stop the background collector when the collection window is done:
+
+```sh
+gua stop
 ```
 
 If `--db` is omitted, both `daemon` and `report` use `/tmp/gua.db`.
 `daemon` refuses to start when that database file already exists, so a
 new collection run does not silently append to an old test database. If
 `gua doctor` reports that the database already exists, either run
-`gpu-usage-audit report` against the existing data or choose a fresh
-`--db PATH` for the next daemon run.
+`gua report` against the existing data or choose a fresh `--db PATH` for
+the next daemon run.
 
 > The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
 > driverless host it exits with a friendly NVML initialization error. For
@@ -168,18 +178,24 @@ new collection run does not silently append to an old test database. If
 
 ## Usage
 
-`gpu-usage-audit` has three commands sharing one SQLite file:
+`gua` has commands sharing one SQLite file. The `gpu-usage-audit` entry
+point remains installed for compatibility, but new examples use `gua`.
 
 | Command  | What it does                                                |
 | -------- | ----------------------------------------------------------- |
-| `daemon` | Long-running background process. Samples real NVML telemetry on every tick and writes to a new database. Stop with Ctrl+C (SIGINT) or `systemctl stop`. NVIDIA host required. |
+| `daemon` | Starts the collector in the background. Samples real NVML telemetry on every tick and writes to a new database. NVIDIA host required. |
+| `start`  | Alias for `gua daemon`. |
+| `status` | Shows whether the background collector PID is still running. |
+| `stop`   | Stops the background collector with SIGTERM. |
 | `report` | One-shot read against the accumulated database. Safe to run **while the daemon is still writing** — SQLite WAL mode handles the concurrency. |
 | `demo`   | Self-contained showcase. Records N fake ticks and immediately prints the report. No GPU, no second shell, no operational meaning — just to see the output shape. |
 
-### `daemon`
+### `daemon` / `start`
 
 ```
-gpu-usage-audit daemon [--db PATH] [--interval D]
+gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
+gua start  [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
+gua daemon --foreground [--db PATH] [--interval D]
 ```
 
 - `--db PATH` (default `/tmp/gua.db`) — SQLite file to create and write
@@ -187,14 +203,21 @@ gpu-usage-audit daemon [--db PATH] [--interval D]
   is enabled automatically.
 - `--interval D` (default `30s`) — how often to sample. Accepts `30s`,
   `1m`, `200ms`, etc.
+- `--pid-file PATH` (default `/tmp/gua.pid`) — background PID file.
+- `--log-file PATH` (default `/tmp/gua.log`) — stdout/stderr from the
+  background collector.
+- `--foreground` — keep the collector attached to the current process.
+  Use this for systemd or debugging.
 
-Each tick prints a one-line summary to stdout; on shutdown the cumulative
-row count is printed.
+By default, `gua daemon` returns after the collector starts. Each tick is
+written to the log file; on shutdown the cumulative row count is written
+there too. `gua daemon --foreground` prints the tick summaries directly
+to the terminal and exits on Ctrl+C, SIGTERM, or `systemctl stop`.
 
 ### `report`
 
 ```
-gpu-usage-audit report [--db PATH] [--since D] [--interval D] [--width N]
+gua report [--db PATH] [--since D] [--interval D] [--width N]
 ```
 
 - `--db PATH` (default `/tmp/gua.db`) — same SQLite file the daemon writes
@@ -211,7 +234,7 @@ gpu-usage-audit report [--db PATH] [--since D] [--interval D] [--width N]
 ### `demo`
 
 ```
-gpu-usage-audit demo [--db PATH] [--ticks N] [--interval D]
+gua demo [--db PATH] [--ticks N] [--interval D]
 ```
 
 - `--db PATH` (optional) — if omitted, a fresh temporary database is
@@ -223,7 +246,7 @@ gpu-usage-audit demo [--db PATH] [--ticks N] [--interval D]
 ### Operational notes
 
 - **Same `--interval` on both sides.** If you ran the daemon with
-  `--interval 30s`, run `report --interval 30s` too.
+  `--interval 30s`, run `gua report --interval 30s` too.
 - **Let it run for a while.** §1/§3 are meaningful after one tick;
   §4 (Top identities) needs hours; §5 (Heatmap) needs days.
 - **WAL leaves sidecar files** (`gua.db-wal`, `gua.db-shm`). They are
@@ -238,12 +261,12 @@ For a long-running deployment, drop a unit file in
 
 ```ini
 [Unit]
-Description=gpu-usage-audit daemon
+Description=gua daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/gpu-usage-audit daemon --db /var/lib/gua/gua.db --interval 30s
+ExecStart=/usr/local/bin/gua daemon --foreground --db /var/lib/gua/gua.db --interval 30s
 Restart=on-failure
 User=gua
 
@@ -283,7 +306,7 @@ uv sync                          # create .venv, install dev deps
 uv run pytest                    # run the test suite
 uv run ruff check                # lint
 uv run mypy                      # type-check (strict)
-uv run gpu-usage-audit demo      # see the report shape locally
+uv run gua demo                  # see the report shape locally
 ```
 
 CI runs ruff + format check + mypy + pytest, then builds and smoke-tests

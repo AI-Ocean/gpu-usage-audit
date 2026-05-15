@@ -40,7 +40,7 @@ def test_render_headline_with_host_and_samples() -> None:
         timedelta(hours=1),
         width=60,
     )
-    assert "gpu-usage-audit — lab-a100 (bare, driver 560.35.05)" in out
+    assert "gua — lab-a100 (bare, driver 560.35.05)" in out
     assert "Window: 1:00:00" in out
     assert "§1 Headline" in out
     assert "(8 samples)" in out
