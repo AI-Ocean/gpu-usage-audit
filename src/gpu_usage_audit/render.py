@@ -40,15 +40,12 @@ def render_headline(
     줘서 합이 항상 width — 마지막 칸이 비어 보이지 않게.
     """
     if not host.hostname:
-        print(
-            f"gpu-usage-audit  (no host row — daemon hasn't run yet?)  Window: {since}\n",
-            file=w,
-        )
+        print(f"gua  (no host row — daemon hasn't run yet?)  Window: {since}\n", file=w)
     else:
         ctx = host.env_kind
         if host.driver_version:
             ctx = f"{host.env_kind}, driver {host.driver_version}"
-        print(f"gpu-usage-audit — {host.hostname} ({ctx})  Window: {since}\n", file=w)
+        print(f"gua — {host.hostname} ({ctx})  Window: {since}\n", file=w)
 
     print("§1 Headline", file=w)
     if h.samples == 0:

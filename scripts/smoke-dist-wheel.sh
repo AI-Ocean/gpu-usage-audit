@@ -113,4 +113,4 @@ if "NVML initialization failed" in summary:
     raise SystemExit(f"summary still has duplicate init prefix: {summary}")
 PY
 
-"$tmpdir/venv/bin/gpu-usage-audit" demo --ticks 1 --interval 1ms >/dev/null
+"$tmpdir/venv/bin/gua" demo --ticks 1 --interval 1ms >/dev/null

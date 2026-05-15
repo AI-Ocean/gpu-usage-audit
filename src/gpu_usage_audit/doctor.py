@@ -24,8 +24,8 @@ type Which = Callable[[str], str | None]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 3.0
 DEFAULT_DB_PATH = Path("/tmp/gua.db")
-COLLECT_COMMAND = "gpu-usage-audit daemon --interval 30s"
-REPORT_COMMAND = "gpu-usage-audit report --since 1h --interval 30s"
+COLLECT_COMMAND = "gua daemon --interval 30s"
+REPORT_COMMAND = "gua report --since 1h --interval 30s"
 
 
 @dataclass(slots=True)
@@ -618,13 +618,13 @@ def _recommended_commands_for(report: DoctorReport) -> dict[str, str]:
 def _collect_command(db_path: str) -> str:
     if Path(db_path) == DEFAULT_DB_PATH:
         return COLLECT_COMMAND
-    return f"gpu-usage-audit daemon --db {shlex.quote(db_path)} --interval 30s"
+    return f"gua daemon --db {shlex.quote(db_path)} --interval 30s"
 
 
 def _report_command(db_path: str) -> str:
     if Path(db_path) == DEFAULT_DB_PATH:
         return REPORT_COMMAND
-    return f"gpu-usage-audit report --db {shlex.quote(db_path)} --since 1h --interval 30s"
+    return f"gua report --db {shlex.quote(db_path)} --since 1h --interval 30s"
 
 
 def _short_error(result: CommandResult) -> str:
@@ -669,7 +669,7 @@ def _host_warnings(facts: DetectionFacts) -> list[str]:
     warnings: list[str] = []
     if facts.database.exists and facts.database.is_file:
         warnings.append(
-            f"{facts.database.path} already exists; `gpu-usage-audit daemon` will refuse "
+            f"{facts.database.path} already exists; `gua daemon` will refuse "
             "this path until it is removed or another --db path is provided."
         )
     elif (
