@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 - 2026-05-15
 
 - Hardened `gua status` and `gua stop` so stale PID files do not act on
   unrelated live processes.

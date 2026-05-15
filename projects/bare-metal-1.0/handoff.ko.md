@@ -4,7 +4,7 @@
 
 ## 이어받을 때 먼저 볼 것
 
-- `projects/bare-metal-1.0/status.ko.md`: 현재 완료 상태, 1.0.1 검증 결과, cleanup 리뷰 결과.
+- `projects/bare-metal-1.0/status.ko.md`: 현재 완료 상태, 1.0.1 검증 결과, 1.0.2 release prep 상태.
 - `README.md`: 실제 사용자 문서와 release/install/runbook/report 표면.
 - `src/gpu_usage_audit/__main__.py`: `gua` CLI, background daemon lifecycle, PID handling.
 - `src/gpu_usage_audit/report.py`: report SQL 집계.
@@ -39,6 +39,8 @@
 - GitHub Release `v1.0.1`: published.
 - PyPI `gpu-usage-audit 1.0.1`: published.
 - NVIDIA host acceptance: 사용자가 실제 host에서 수집 정상 동작을 확인했다.
+- 1.0.2 release prep: 진행 중. #14 lifecycle/report cleanup을 patch release로 배포한다.
+  package version은 `1.0.2`로 bump했고 local build/wheel smoke는 통과했다.
 
 ## 마지막 로컬 검증
 
@@ -47,12 +49,12 @@ uv run ruff check
 uv run ruff format --check
 uv run mypy
 uv run pytest
-uv build --out-dir /tmp/gua-dist-1.0.1-status
-bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-1.0.1-status/gpu_usage_audit-1.0.1-py3-none-any.whl
-env GITHUB_REF_NAME=v1.0.1 uv run python scripts/check-tag-version.py
+uv build --out-dir /tmp/gua-dist-1.0.2-prep
+bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-1.0.2-prep/gpu_usage_audit-1.0.2-py3-none-any.whl
+env GITHUB_REF_NAME=v1.0.2 uv run python scripts/check-tag-version.py
 ```
 
-결과는 `pytest` 114 passed, `mypy` 25 source files, `ruff format` 26 files 기준이다.
+결과는 `pytest` 124 passed, `mypy` 25 source files, `ruff format` 26 files 기준이다.
 
 ## 현재 cleanup PR 방향
 
@@ -62,7 +64,7 @@ env GITHUB_REF_NAME=v1.0.1 uv run python scripts/check-tag-version.py
 - report §4는 process row가 아니라 identity/GPU/tick 단위로 먼저 접어서 사용자별 GPU-hours를 계산한다.
 - report 출력 자체에 sample 의미, classification rule, `--interval` 의존성, heatmap 의미를 짧게 노출한다.
 - NVML process list 조회 실패는 idle-held를 과소평가할 수 있으므로 warning으로 남긴다.
-- `projects/bare-metal-1.0/*` 문서는 1.0.1 완료 상태로 갱신한다.
+- 1.0.2 release prep에서는 package version, README release asset 예시, CHANGELOG를 `1.0.2`로 맞춘다.
 
 ## 주의할 점
 
