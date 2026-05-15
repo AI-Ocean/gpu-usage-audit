@@ -10,10 +10,13 @@ GPU 없는 개발/CI/demo 환경도 계속 동작해야 하므로 import/init �
 from __future__ import annotations
 
 import contextlib
+import logging
 from datetime import datetime
 from typing import Any
 
 from .model import GPUSample, ProcSample, Snapshot
+
+logger = logging.getLogger(__name__)
 
 
 class NVMLNotAvailableError(RuntimeError):
@@ -59,6 +62,7 @@ class NVMLTier:
     def __init__(self) -> None:
         self._nvml: Any | None = None  # pynvml ModuleType
         self._initialized = False
+        self._process_list_warning_uuids: set[str] = set()
 
     def __enter__(self) -> NVMLTier:
         return self
@@ -97,7 +101,15 @@ class NVMLTier:
             # 해당 카드의 process list 만 비우고 진행.
             try:
                 running = nvml.nvmlDeviceGetComputeRunningProcesses(h)
-            except nvml.NVMLError:
+            except nvml.NVMLError as e:
+                if uuid not in self._process_list_warning_uuids:
+                    logger.warning(
+                        "NVML process list unavailable for %s; idle-held classification "
+                        "may be understated: %s",
+                        uuid,
+                        e,
+                    )
+                    self._process_list_warning_uuids.add(uuid)
                 running = []
 
             for p in running:

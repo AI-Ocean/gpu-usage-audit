@@ -83,41 +83,69 @@ def load_headline(conn: sqlite3.Connection, cutoff: datetime) -> Headline:
     )
 
 
-# ── §2 Waste ────────────────────────────────────────────────────
+# ── §2 Idle capacity ─────────────────────────────────────────────
 #
-# idle 틱 수 × interval(초) / 3600 = idle GPU-시간.
-# equiv_unused = idle 비율 × 카드 수. "8장 중 3.2장이 통째로 놀았다" 식.
+# low-util 틱 수 × interval(초) / 3600 = GPU-시간.
+# idle-held 와 truly-idle 을 분리한다. 둘 다 util<10 이지만 의미가 다르다:
+# idle-held 는 프로세스 메모리가 카드를 잡고 있어 다른 사용자가 쓰기 어렵고,
+# truly-idle 은 실제로 비어 있는 용량이다.
+# equiv_gpus = 상태 비율 × 카드 수. "8장 중 3.2장이 해당 상태였다" 식.
 # 카드 수는 *gpu_sample 에서 distinct* 로 추론 — v2 는 별도 gpu 인벤토리
 # 테이블이 없음 (단순화). interval 은 Python 에서 인자로 받는다 —
 # 데몬과 report 가 *같은* interval 을 약속해야 의미가 맞음.
-WASTE_QUERY = """
+IDLE_CAPACITY_QUERY = """
+WITH s AS (
+    SELECT gs.gpu_uuid, gs.ts, gs.util_pct,
+           COALESCE(SUM(ps.mem_used_mb), 0) AS proc_mem_mb
+    FROM gpu_sample gs
+    LEFT JOIN proc_sample ps
+        ON ps.gpu_uuid = gs.gpu_uuid AND ps.ts = gs.ts
+    WHERE gs.ts >= ?
+    GROUP BY gs.gpu_uuid, gs.ts
+),
+gpu_count AS (
+    SELECT COUNT(DISTINCT gpu_uuid) AS n FROM s
+)
 SELECT
-    SUM(CASE WHEN util_pct < 10 THEN 1 ELSE 0 END) * ? / 3600.0          AS idle_gpu_hours,
+    SUM(CASE WHEN util_pct < 10 AND proc_mem_mb >  100 THEN 1 ELSE 0 END) * ? / 3600.0 AS idle_held_gpu_hours,
+    SUM(CASE WHEN util_pct < 10 AND proc_mem_mb <= 100 THEN 1 ELSE 0 END) * ? / 3600.0 AS truly_idle_gpu_hours,
     CASE WHEN COUNT(*) = 0 THEN 0.0
-         ELSE SUM(CASE WHEN util_pct < 10 THEN 1.0 ELSE 0.0 END) / COUNT(*)
-              * (SELECT COUNT(DISTINCT gpu_uuid) FROM gpu_sample)
-    END                                                                  AS equiv_unused,
-    COUNT(*)                                                             AS samples
-FROM gpu_sample
-WHERE ts >= ?
+         ELSE SUM(CASE WHEN util_pct < 10 AND proc_mem_mb > 100 THEN 1.0 ELSE 0.0 END) / COUNT(*)
+              * (SELECT n FROM gpu_count)
+    END AS idle_held_equiv_gpus,
+    CASE WHEN COUNT(*) = 0 THEN 0.0
+         ELSE SUM(CASE WHEN util_pct < 10 AND proc_mem_mb <= 100 THEN 1.0 ELSE 0.0 END) / COUNT(*)
+              * (SELECT n FROM gpu_count)
+    END AS truly_idle_equiv_gpus,
+    COUNT(*) AS samples
+FROM s
 """
 
 
 @dataclass(slots=True)
-class Waste:
-    idle_gpu_hours: float = 0.0
-    equiv_unused: float = 0.0
+class IdleCapacity:
+    idle_held_gpu_hours: float = 0.0
+    truly_idle_gpu_hours: float = 0.0
+    idle_held_equiv_gpus: float = 0.0
+    truly_idle_equiv_gpus: float = 0.0
     samples: int = 0
 
 
-def load_waste(conn: sqlite3.Connection, cutoff: datetime, interval: timedelta) -> Waste:
-    row = conn.execute(WASTE_QUERY, (interval.total_seconds(), _ts(cutoff))).fetchone()
+def load_idle_capacity(
+    conn: sqlite3.Connection,
+    cutoff: datetime,
+    interval: timedelta,
+) -> IdleCapacity:
+    interval_s = interval.total_seconds()
+    row = conn.execute(IDLE_CAPACITY_QUERY, (_ts(cutoff), interval_s, interval_s)).fetchone()
     if row is None:
-        return Waste()
-    idle_h, equiv, samples = row
-    return Waste(
-        idle_gpu_hours=idle_h or 0.0,
-        equiv_unused=equiv or 0.0,
+        return IdleCapacity()
+    idle_held_h, truly_idle_h, idle_held_equiv, truly_idle_equiv, samples = row
+    return IdleCapacity(
+        idle_held_gpu_hours=idle_held_h or 0.0,
+        truly_idle_gpu_hours=truly_idle_h or 0.0,
+        idle_held_equiv_gpus=idle_held_equiv or 0.0,
+        truly_idle_equiv_gpus=truly_idle_equiv or 0.0,
         samples=samples,
     )
 
@@ -173,14 +201,25 @@ def load_per_gpu(conn: sqlite3.Connection, cutoff: datetime) -> list[PerGPU]:
 #
 # 누가 GPU-시간을 가장 많이 소비했나 + 그 중 idle-held 비율.
 # COALESCE 로 NULL loginuid_user 를 'unknown' 으로 묶음.
+# 같은 identity 가 같은 GPU/tick 에 여러 프로세스를 띄워도 한 번만 센다.
 TOP_IDENTITIES_QUERY = """
+WITH owned AS (
+    SELECT
+        COALESCE(loginuid_user, 'unknown') AS identity,
+        gpu_uuid,
+        ts,
+        SUM(mem_used_mb) AS mem_used_mb
+    FROM proc_sample
+    WHERE ts >= ?
+    GROUP BY identity, gpu_uuid, ts
+)
 SELECT
-    COALESCE(ps.loginuid_user, 'unknown')                                                      AS identity,
-    COUNT(*) * ? / 3600.0                                                                      AS gpu_hours,
-    AVG(CASE WHEN gs.util_pct < 10 AND ps.mem_used_mb > 100 THEN 1.0 ELSE 0.0 END)             AS idle_held
-FROM proc_sample ps
-JOIN gpu_sample gs ON gs.gpu_uuid = ps.gpu_uuid AND gs.ts = ps.ts
-WHERE ps.ts >= ?
+    owned.identity                                                                  AS identity,
+    COUNT(*) * ? / 3600.0                                                           AS gpu_hours,
+    AVG(CASE WHEN gs.util_pct < 10 AND owned.mem_used_mb > 100 THEN 1.0 ELSE 0.0 END) AS idle_held,
+    COUNT(*)                                                                        AS samples
+FROM owned
+JOIN gpu_sample gs ON gs.gpu_uuid = owned.gpu_uuid AND gs.ts = owned.ts
 GROUP BY identity
 ORDER BY gpu_hours DESC
 LIMIT 10
@@ -192,6 +231,7 @@ class TopIdentity:
     identity: str
     gpu_hours: float
     idle_held: float
+    samples: int
 
 
 def load_top_identities(
@@ -200,14 +240,15 @@ def load_top_identities(
     interval: timedelta,
 ) -> list[TopIdentity]:
     out: list[TopIdentity] = []
-    for identity, gpu_hours, idle_held in conn.execute(
-        TOP_IDENTITIES_QUERY, (interval.total_seconds(), _ts(cutoff))
+    for identity, gpu_hours, idle_held, samples in conn.execute(
+        TOP_IDENTITIES_QUERY, (_ts(cutoff), interval.total_seconds())
     ):
         out.append(
             TopIdentity(
                 identity=identity,
                 gpu_hours=gpu_hours or 0.0,
                 idle_held=idle_held or 0.0,
+                samples=samples,
             )
         )
     return out

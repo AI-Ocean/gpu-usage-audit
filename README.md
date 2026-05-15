@@ -81,26 +81,33 @@ $ gua report --since 1h --interval 30s
 gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 
 §1 Headline
+  basis: one sample = one GPU card at one daemon tick
+  rules: active >=10% util; idle-held <10% util with >100 MB process memory
   █████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░
   active       █   15.7%
   idle-held    ▒   45.1%       ← this is the number conventional tools miss
   truly-idle   ░   39.2%
   (51 samples)
 
-§2 Waste
-  ~0.43 GPU-hours idle, ~2.53 GPUs equivalently unused
+§2 Idle capacity
+  converted from card-ticks to GPU-hours using the report --interval
+  idle-held: ~0.31 GPU-hours, ~1.53 GPUs equivalently unavailable
+  truly-idle: ~0.12 GPU-hours, ~1.00 GPUs equivalently free
 
 §3 Per-GPU
+  per-card share of samples in the same three states
   GPU-0     active  47.1%  idle-held  35.3%  truly-idle  17.6%
   GPU-1     active   0.0%  idle-held 100.0%  truly-idle   0.0%
   GPU-2     active   0.0%  idle-held   0.0%  truly-idle 100.0%
 
 §4 Top identities
-  identity              gpu-hours   idle-held
-  alice                      0.42       42.9%
-  bob                        0.28      100.0%
+  one identity counts once per GPU/tick after its processes are summed
+  identity              gpu-hours   idle-held   samples
+  alice                      0.42       42.9%        51
+  bob                        0.28      100.0%        34
 
 §5 Time-of-day heatmap (UTC)
+  darker means higher active share; blank means no samples
         0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
   Mon               .
 ```
@@ -108,7 +115,10 @@ gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 The 3-bar collapses every card × every tick over the window into the
 active / idle-held / truly-idle split. **`idle-held` rows are the
 embarrassing category**: a process is holding GPU memory but the SM
-utilization is below 10%.
+utilization is below 10%. §2 converts those card-ticks into GPU-hours
+with `--interval`; §4 groups process rows by identity, GPU, and tick
+before ranking users, so multiple same-user processes on one GPU/tick
+count once.
 
 ## Demo (no GPU required)
 
@@ -185,7 +195,7 @@ point remains installed for compatibility, but new examples use `gua`.
 | -------- | ----------------------------------------------------------- |
 | `daemon` | Starts the collector in the background. Samples real NVML telemetry on every tick and writes to a new database. NVIDIA host required. |
 | `start`  | Alias for `gua daemon`. |
-| `status` | Shows whether the background collector PID is still running. |
+| `status` | Shows whether the background collector PID is still running. Also clears a stale PID file when it points to a missing or unrelated process. |
 | `stop`   | Stops the background collector with SIGTERM. |
 | `report` | One-shot read against the accumulated database. Safe to run **while the daemon is still writing** — SQLite WAL mode handles the concurrency. |
 | `demo`   | Self-contained showcase. Records N fake ticks and immediately prints the report. No GPU, no second shell, no operational meaning — just to see the output shape. |
@@ -213,6 +223,8 @@ By default, `gua daemon` returns after the collector starts. Each tick is
 written to the log file; on shutdown the cumulative row count is written
 there too. `gua daemon --foreground` prints the tick summaries directly
 to the terminal and exits on Ctrl+C, SIGTERM, or `systemctl stop`.
+`gua status` and `gua stop` verify that the PID file points to the
+managed collector before acting on it; stale PID files are cleared.
 
 ### `report`
 
@@ -227,7 +239,7 @@ gua report [--db PATH] [--since D] [--interval D] [--width N]
   of oldest sample), so passing a huge `--since` is the same as "all
   data". Units: `ms`, `s`, `m`, `h`, `d` (no `w`; use `7d`).
 - `--interval D` (default `30s`) — **must match what the daemon used**.
-  This is how §2 (Waste) and §4 (Top identities) convert tick counts
+  This is how §2 (Idle capacity) and §4 (Top identities) convert tick counts
   to GPU-hours. Mismatched intervals → wrong GPU-hours.
 - `--width N` (default `60`) — width of the §1 three-bar in characters.
 

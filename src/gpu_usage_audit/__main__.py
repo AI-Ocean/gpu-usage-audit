@@ -48,17 +48,17 @@ from .nvml import NVMLNotAvailableError, NVMLTier
 from .render import (
     render_headline,
     render_heatmap,
+    render_idle_capacity,
     render_per_gpu,
     render_top_identities,
-    render_waste,
 )
 from .report import (
     load_headline,
     load_heatmap,
     load_host,
+    load_idle_capacity,
     load_per_gpu,
     load_top_identities,
-    load_waste,
 )
 from .tier import FakeTier
 
@@ -137,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--interval",
         type=_duration,
         default=timedelta(seconds=30),
-        help="Daemon tick interval — for §2 Waste / §4 time conversion [default: 30s]",
+        help="Daemon tick interval — for §2 Idle capacity / §4 time conversion [default: 30s]",
     )
     p_report.add_argument(
         "--width",
@@ -206,7 +206,7 @@ def _add_report_args(parser: argparse.ArgumentParser) -> None:
         "--interval",
         type=_duration,
         default=timedelta(seconds=30),
-        help="Daemon tick interval — for §2 Waste / §4 time conversion [default: 30s]",
+        help="Daemon tick interval — for §2 Idle capacity / §4 time conversion [default: 30s]",
     )
     parser.add_argument(
         "--width",
@@ -355,10 +355,15 @@ def _cmd_gua_start(args: argparse.Namespace) -> int:
     log_path = Path(args.log_file)
 
     existing_pid = _read_pid(pid_path)
-    if existing_pid is not None and _pid_alive(existing_pid):
-        print(f"gua daemon: already running (pid {existing_pid})")
-        return 0
     if existing_pid is not None:
+        if _pid_alive(existing_pid) and _pid_is_managed_daemon(existing_pid):
+            print(f"gua daemon: already running (pid {existing_pid})")
+            return 0
+        if _pid_alive(existing_pid):
+            print(
+                f"gua daemon: pid {existing_pid} belongs to another process; "
+                "clearing stale pid file"
+            )
         _unlink_if_exists(pid_path)
 
     if db_path.exists():
@@ -418,13 +423,20 @@ def _cmd_gua_status(args: argparse.Namespace) -> int:
     if pid is None:
         print("gua daemon: not running")
         return 0
-    if _pid_alive(pid):
+    if _pid_alive(pid) and _pid_is_managed_daemon(pid):
         print(f"gua daemon: running (pid {pid})")
         print(f"  pid file: {pid_path}")
         print(f"  log: {log_path}")
         return 0
-    print(f"gua daemon: not running (stale pid {pid})")
-    _unlink_if_exists(pid_path)
+    if _pid_alive(pid):
+        _unlink_if_exists(pid_path)
+        print(
+            f"gua daemon: not running (pid {pid} belongs to another process; "
+            "cleared stale pid file)"
+        )
+    else:
+        print(f"gua daemon: not running (stale pid {pid})")
+        _unlink_if_exists(pid_path)
     return 0
 
 
@@ -438,7 +450,17 @@ def _cmd_gua_stop(args: argparse.Namespace) -> int:
         _unlink_if_exists(pid_path)
         print(f"gua daemon: not running (removed stale pid {pid})")
         return 0
+    if not _pid_is_managed_daemon(pid):
+        _unlink_if_exists(pid_path)
+        print(
+            f"gua daemon: not running (pid {pid} belongs to another process; "
+            "cleared stale pid file)"
+        )
+        return 0
 
+    # The identity check above closes the common stale-PID-file case. A tiny
+    # check-then-kill race remains if the process exits and the OS reuses the
+    # PID before SIGTERM; avoiding that needs a stronger lock model.
     try:
         os.kill(pid, signal.SIGTERM)
     except PermissionError:
@@ -525,12 +547,12 @@ def _cmd_report(args: argparse.Namespace) -> int:
         cutoff = datetime.now(UTC) - args.since
         host = load_host(conn)
         headline = load_headline(conn, cutoff)
-        waste = load_waste(conn, cutoff, args.interval)
+        idle_capacity = load_idle_capacity(conn, cutoff, args.interval)
         per_gpu = load_per_gpu(conn, cutoff)
         top = load_top_identities(conn, cutoff, args.interval)
         heat = load_heatmap(conn, cutoff)
         render_headline(sys.stdout, host, headline, args.since, args.width)
-        render_waste(sys.stdout, waste)
+        render_idle_capacity(sys.stdout, idle_capacity)
         render_per_gpu(sys.stdout, per_gpu)
         render_top_identities(sys.stdout, top)
         render_heatmap(sys.stdout, heat)
@@ -586,7 +608,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         cutoff = datetime.now(UTC) - window
         loaded_host = load_host(conn)
         render_headline(sys.stdout, loaded_host, load_headline(conn, cutoff), window, width=60)
-        render_waste(sys.stdout, load_waste(conn, cutoff, args.interval))
+        render_idle_capacity(sys.stdout, load_idle_capacity(conn, cutoff, args.interval))
         render_per_gpu(sys.stdout, load_per_gpu(conn, cutoff))
         render_top_identities(sys.stdout, load_top_identities(conn, cutoff, args.interval))
         render_heatmap(sys.stdout, load_heatmap(conn, cutoff))
@@ -675,6 +697,27 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _pid_is_managed_daemon(pid: int) -> bool:
+    """Return True for the subprocess shape created by `_cmd_gua_start`.
+
+    Keep this in sync with the spawn command in `_cmd_gua_start`; status/stop
+    use it to avoid acting on unrelated processes from stale PID files.
+    """
+    args = _read_proc_cmdline(pid)
+    for i, arg in enumerate(args):
+        if arg == "-m" and args[i + 1 : i + 3] == ["gpu_usage_audit", "daemon"]:
+            return True
+    return False
+
+
+def _read_proc_cmdline(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part]
 
 
 def _unlink_if_exists(path: Path) -> None:
