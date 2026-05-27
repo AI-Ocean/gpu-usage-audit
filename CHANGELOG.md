@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.3 - 2026-05-27
 
 - Changed default `gua` state paths to `~/.gua/gua.db`, `~/.gua/gua.pid`,
   and `~/.gua/gua.log`; the default database now acts as an appendable local
