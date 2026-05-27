@@ -32,14 +32,14 @@ uv tool install gpu-usage-audit
 gua doctor
 gua daemon --interval 30s
 gua status
-gua report --since 1h --interval 30s
+gua report --since 1h
 gua stop
 ```
 
 `gua doctor` is intentionally read-only. It checks only the current
 machine: OS/kernel/Python, `/dev/nvidia*`, `nvidia-smi -L`, NVML
 load/init/device count/driver version, and the database path the daemon
-would write to. The default is `/tmp/gua.db`; pass `gua doctor --db PATH`
+would write to. The default is `~/.gua/gua.db`; pass `gua doctor --db PATH`
 when you plan to use a different daemon database.
 
 Use `gua doctor --json` for the same report in a machine-readable form.
@@ -77,7 +77,7 @@ uvx --from "./$WHEEL" gua doctor
 ## What you get
 
 ```
-$ gua report --since 1h --interval 30s
+$ gua report --since 1h
 gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 
 §1 Headline
@@ -90,7 +90,7 @@ gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
   (51 samples)
 
 §2 Idle capacity
-  converted from card-ticks to GPU-hours using the report --interval
+  converted from card-ticks to GPU-hours using recorded daemon interval
   idle-held: ~0.31 GPU-hours, ~1.53 GPUs equivalently unavailable
   truly-idle: ~0.12 GPU-hours, ~1.00 GPUs equivalently free
 
@@ -116,9 +116,9 @@ The 3-bar collapses every card × every tick over the window into the
 active / idle-held / truly-idle split. **`idle-held` rows are the
 embarrassing category**: a process is holding GPU memory but the SM
 utilization is below 10%. §2 converts those card-ticks into GPU-hours
-with `--interval`; §4 groups process rows by identity, GPU, and tick
-before ranking users, so multiple same-user processes on one GPU/tick
-count once.
+using the interval recorded by the daemon; §4 groups process rows by
+identity, GPU, and tick before ranking users, so multiple same-user
+processes on one GPU/tick count once.
 
 ## Demo (no GPU required)
 
@@ -142,7 +142,7 @@ gua doctor
 ```
 
 Doctor should show the current machine, visible `/dev/nvidia*` device
-files, `nvidia-smi -L` GPUs, NVML device count, and `/tmp/gua.db` status.
+files, `nvidia-smi -L` GPUs, NVML device count, and `~/.gua/gua.db` status.
 `nvidia-ml-py` is installed by default with `gpu-usage-audit`; if doctor
 reports that `pynvml` is not importable, reinstall the isolated tool
 environment:
@@ -166,7 +166,7 @@ gua status
 Run the report:
 
 ```sh
-gua report --since 1h --interval 30s
+gua report --since 1h
 ```
 
 Stop the background collector when the collection window is done:
@@ -175,12 +175,12 @@ Stop the background collector when the collection window is done:
 gua stop
 ```
 
-If `--db` is omitted, both `daemon` and `report` use `/tmp/gua.db`.
-`daemon` refuses to start when that database file already exists, so a
-new collection run does not silently append to an old test database. If
-`gua doctor` reports that the database already exists, either run
-`gua report` against the existing data or choose a fresh `--db PATH` for
-the next daemon run.
+If `--db` is omitted, `daemon`, `report`, `status`, and `stop` use
+`~/.gua/` for local user state: `gua.db`, `gua.pid`, and `gua.log`. The
+default database is a local history database, so later daemon runs append
+to it and reports read the accumulated data. If you pass a custom
+`--db PATH`, `daemon` still refuses an existing file to avoid silently
+appending to an ad hoc collection run.
 
 > The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
 > driverless host it exits with a friendly NVML initialization error. For
@@ -193,7 +193,7 @@ point remains installed for compatibility, but new examples use `gua`.
 
 | Command  | What it does                                                |
 | -------- | ----------------------------------------------------------- |
-| `daemon` | Starts the collector in the background. Samples real NVML telemetry on every tick and writes to a new database. NVIDIA host required. |
+| `daemon` | Starts the collector in the background. Samples real NVML telemetry on every tick and writes to the local history database. NVIDIA host required. |
 | `start`  | Alias for `gua daemon`. |
 | `status` | Shows whether the background collector PID is still running. Also clears a stale PID file when it points to a missing or unrelated process. |
 | `stop`   | Stops the background collector with SIGTERM. |
@@ -208,13 +208,14 @@ gua start  [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
 gua daemon --foreground [--db PATH] [--interval D]
 ```
 
-- `--db PATH` (default `/tmp/gua.db`) — SQLite file to create and write
-  to. The daemon exits with an error if the file already exists. WAL mode
-  is enabled automatically.
+- `--db PATH` (default `~/.gua/gua.db`) — SQLite history database. The
+  default path is appended across daemon runs; a custom path still exits
+  with an error if the file already exists. WAL mode is enabled
+  automatically.
 - `--interval D` (default `30s`) — how often to sample. Accepts `30s`,
   `1m`, `200ms`, etc.
-- `--pid-file PATH` (default `/tmp/gua.pid`) — background PID file.
-- `--log-file PATH` (default `/tmp/gua.log`) — stdout/stderr from the
+- `--pid-file PATH` (default `~/.gua/gua.pid`) — background PID file.
+- `--log-file PATH` (default `~/.gua/gua.log`) — stdout/stderr from the
   background collector.
 - `--foreground` — keep the collector attached to the current process.
   Use this for systemd or debugging.
@@ -232,15 +233,15 @@ managed collector before acting on it; stale PID files are cleared.
 gua report [--db PATH] [--since D] [--interval D] [--width N]
 ```
 
-- `--db PATH` (default `/tmp/gua.db`) — same SQLite file the daemon writes
-  to. The report exits with an error if the file does not exist.
+- `--db PATH` (default `~/.gua/gua.db`) — same SQLite file the daemon
+  writes to. The report exits with an error if the file does not exist.
 - `--since D` (default `1h`) — the report window. **No upper bound** —
   `--since 365d` is accepted. The effective window is min(`--since`, age
   of oldest sample), so passing a huge `--since` is the same as "all
   data". Units: `ms`, `s`, `m`, `h`, `d` (no `w`; use `7d`).
-- `--interval D` (default `30s`) — **must match what the daemon used**.
-  This is how §2 (Idle capacity) and §4 (Top identities) convert tick counts
-  to GPU-hours. Mismatched intervals → wrong GPU-hours.
+- `--interval D` — optional override for §2 (Idle capacity) and §4 (Top
+  identities). By default, reports use the interval recorded by each daemon
+  run. Legacy rows without interval metadata fall back to 30s.
 - `--width N` (default `60`) — width of the §1 three-bar in characters.
 
 ### `demo`
@@ -257,8 +258,10 @@ gua demo [--db PATH] [--ticks N] [--interval D]
 
 ### Operational notes
 
-- **Same `--interval` on both sides.** If you ran the daemon with
-  `--interval 30s`, run `gua report --interval 30s` too.
+- **Intervals are recorded.** New daemon runs store their sampling interval
+  in the database, so `gua report` can compute GPU-hours without repeating
+  `--interval`. Use report `--interval D` only to override or to interpret
+  legacy rows.
 - **Let it run for a while.** §1/§3 are meaningful after one tick;
   §4 (Top identities) needs hours; §5 (Heatmap) needs days.
 - **WAL leaves sidecar files** (`gua.db-wal`, `gua.db-shm`). They are

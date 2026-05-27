@@ -52,7 +52,10 @@ def test_run_daemon_runs_max_ticks_and_loads_rows(db: sqlite3.Connection, host: 
 
     # FakeTier 는 GPU 3개를 매 틱 반환 → 3 ticks * 3 GPUs = 9 gpu_sample 행.
     assert db.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0] == 9
-    # host upsert 한 행.
+    # 한 daemon run 과 host upsert 한 행.
+    assert db.execute("SELECT COUNT(*) FROM daemon_run").fetchone()[0] == 1
+    assert db.execute("SELECT interval_seconds FROM daemon_run").fetchone()[0] == 0.02
+    assert db.execute("SELECT COUNT(DISTINCT run_id) FROM gpu_sample").fetchone()[0] == 1
     assert db.execute("SELECT COUNT(*) FROM host").fetchone()[0] == 1
 
     # 콘솔 출력: 3 틱 모두 "Tick N" 줄.

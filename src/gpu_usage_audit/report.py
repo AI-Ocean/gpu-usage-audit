@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 from .db import _ts
 from .model import HostRow
 
+LEGACY_INTERVAL_FALLBACK = timedelta(seconds=30)
+
 
 def load_host(conn: sqlite3.Connection) -> HostRow:
     """단일 host row 를 읽는다. row 없으면 *빈* HostRow — 헤더가 "host
@@ -42,13 +44,15 @@ def load_host(conn: sqlite3.Connection) -> HostRow:
 # truly-idle 로 집계됨. INNER JOIN 이었다면 통째로 사라짐.
 HEADLINE_QUERY = """
 WITH s AS (
-    SELECT gs.gpu_uuid, gs.ts, gs.util_pct,
+    SELECT gs.gpu_uuid, gs.ts, gs.run_id, gs.util_pct,
            COALESCE(SUM(ps.mem_used_mb), 0) AS proc_mem_mb
     FROM gpu_sample gs
     LEFT JOIN proc_sample ps
-        ON ps.gpu_uuid = gs.gpu_uuid AND ps.ts = gs.ts
+        ON ps.gpu_uuid = gs.gpu_uuid
+        AND ps.ts = gs.ts
+        AND (ps.run_id = gs.run_id OR (ps.run_id IS NULL AND gs.run_id IS NULL))
     WHERE gs.ts >= ?
-    GROUP BY gs.gpu_uuid, gs.ts
+    GROUP BY gs.gpu_uuid, gs.ts, gs.run_id
 )
 SELECT
     AVG(CASE WHEN util_pct >= 10                          THEN 1.0 ELSE 0.0 END) AS active,
@@ -91,24 +95,33 @@ def load_headline(conn: sqlite3.Connection, cutoff: datetime) -> Headline:
 # truly-idle 은 실제로 비어 있는 용량이다.
 # equiv_gpus = 상태 비율 × 카드 수. "8장 중 3.2장이 해당 상태였다" 식.
 # 카드 수는 *gpu_sample 에서 distinct* 로 추론 — v2 는 별도 gpu 인벤토리
-# 테이블이 없음 (단순화). interval 은 Python 에서 인자로 받는다 —
-# 데몬과 report 가 *같은* interval 을 약속해야 의미가 맞음.
+# 테이블이 없음 (단순화). 새 DB 는 daemon_run.interval_seconds 를 샘플별로
+# 조인해 GPU-hours 를 계산한다. run_id 가 없는 legacy row 는 report --interval
+# 또는 30s fallback 을 사용한다.
 IDLE_CAPACITY_QUERY = """
 WITH s AS (
-    SELECT gs.gpu_uuid, gs.ts, gs.util_pct,
+    SELECT gs.gpu_uuid, gs.ts, gs.util_pct, gs.run_id,
            COALESCE(SUM(ps.mem_used_mb), 0) AS proc_mem_mb
     FROM gpu_sample gs
     LEFT JOIN proc_sample ps
-        ON ps.gpu_uuid = gs.gpu_uuid AND ps.ts = gs.ts
+        ON ps.gpu_uuid = gs.gpu_uuid
+        AND ps.ts = gs.ts
+        AND (ps.run_id = gs.run_id OR (ps.run_id IS NULL AND gs.run_id IS NULL))
     WHERE gs.ts >= ?
-    GROUP BY gs.gpu_uuid, gs.ts
+    GROUP BY gs.gpu_uuid, gs.ts, gs.run_id
 ),
 gpu_count AS (
     SELECT COUNT(DISTINCT gpu_uuid) AS n FROM s
 )
 SELECT
-    SUM(CASE WHEN util_pct < 10 AND proc_mem_mb >  100 THEN 1 ELSE 0 END) * ? / 3600.0 AS idle_held_gpu_hours,
-    SUM(CASE WHEN util_pct < 10 AND proc_mem_mb <= 100 THEN 1 ELSE 0 END) * ? / 3600.0 AS truly_idle_gpu_hours,
+    SUM(
+        CASE WHEN util_pct < 10 AND proc_mem_mb > 100
+             THEN COALESCE(?, dr.interval_seconds, ?) ELSE 0 END
+    ) / 3600.0 AS idle_held_gpu_hours,
+    SUM(
+        CASE WHEN util_pct < 10 AND proc_mem_mb <= 100
+             THEN COALESCE(?, dr.interval_seconds, ?) ELSE 0 END
+    ) / 3600.0 AS truly_idle_gpu_hours,
     CASE WHEN COUNT(*) = 0 THEN 0.0
          ELSE SUM(CASE WHEN util_pct < 10 AND proc_mem_mb > 100 THEN 1.0 ELSE 0.0 END) / COUNT(*)
               * (SELECT n FROM gpu_count)
@@ -119,6 +132,7 @@ SELECT
     END AS truly_idle_equiv_gpus,
     COUNT(*) AS samples
 FROM s
+LEFT JOIN daemon_run dr ON dr.id = s.run_id
 """
 
 
@@ -129,15 +143,20 @@ class IdleCapacity:
     idle_held_equiv_gpus: float = 0.0
     truly_idle_equiv_gpus: float = 0.0
     samples: int = 0
+    interval_source: str = "recorded daemon interval (legacy rows fall back to 30s)"
 
 
 def load_idle_capacity(
     conn: sqlite3.Connection,
     cutoff: datetime,
-    interval: timedelta,
+    interval: timedelta | None = None,
 ) -> IdleCapacity:
-    interval_s = interval.total_seconds()
-    row = conn.execute(IDLE_CAPACITY_QUERY, (_ts(cutoff), interval_s, interval_s)).fetchone()
+    override_s = interval.total_seconds() if interval is not None else None
+    fallback_s = LEGACY_INTERVAL_FALLBACK.total_seconds()
+    row = conn.execute(
+        IDLE_CAPACITY_QUERY,
+        (_ts(cutoff), override_s, fallback_s, override_s, fallback_s),
+    ).fetchone()
     if row is None:
         return IdleCapacity()
     idle_held_h, truly_idle_h, idle_held_equiv, truly_idle_equiv, samples = row
@@ -147,6 +166,7 @@ def load_idle_capacity(
         idle_held_equiv_gpus=idle_held_equiv or 0.0,
         truly_idle_equiv_gpus=truly_idle_equiv or 0.0,
         samples=samples,
+        interval_source=_interval_source(interval),
     )
 
 
@@ -163,10 +183,12 @@ SELECT
     COUNT(*)                                                                                    AS samples
 FROM gpu_sample gs
 LEFT JOIN (
-    SELECT gpu_uuid, ts, SUM(mem_used_mb) AS proc_mem
+    SELECT gpu_uuid, ts, run_id, SUM(mem_used_mb) AS proc_mem
     FROM proc_sample
-    GROUP BY gpu_uuid, ts
-) ps ON ps.gpu_uuid = gs.gpu_uuid AND ps.ts = gs.ts
+    GROUP BY gpu_uuid, ts, run_id
+) ps ON ps.gpu_uuid = gs.gpu_uuid
+    AND ps.ts = gs.ts
+    AND (ps.run_id = gs.run_id OR (ps.run_id IS NULL AND gs.run_id IS NULL))
 WHERE gs.ts >= ?
 GROUP BY gs.gpu_uuid
 ORDER BY gs.gpu_uuid
@@ -208,18 +230,22 @@ WITH owned AS (
         COALESCE(loginuid_user, 'unknown') AS identity,
         gpu_uuid,
         ts,
+        run_id,
         SUM(mem_used_mb) AS mem_used_mb
     FROM proc_sample
     WHERE ts >= ?
-    GROUP BY identity, gpu_uuid, ts
+    GROUP BY identity, gpu_uuid, ts, run_id
 )
 SELECT
     owned.identity                                                                  AS identity,
-    COUNT(*) * ? / 3600.0                                                           AS gpu_hours,
+    SUM(COALESCE(?, dr.interval_seconds, ?)) / 3600.0                                AS gpu_hours,
     AVG(CASE WHEN gs.util_pct < 10 AND owned.mem_used_mb > 100 THEN 1.0 ELSE 0.0 END) AS idle_held,
     COUNT(*)                                                                        AS samples
 FROM owned
-JOIN gpu_sample gs ON gs.gpu_uuid = owned.gpu_uuid AND gs.ts = owned.ts
+JOIN gpu_sample gs ON gs.gpu_uuid = owned.gpu_uuid
+    AND gs.ts = owned.ts
+    AND (owned.run_id = gs.run_id OR (owned.run_id IS NULL AND gs.run_id IS NULL))
+LEFT JOIN daemon_run dr ON dr.id = COALESCE(owned.run_id, gs.run_id)
 GROUP BY identity
 ORDER BY gpu_hours DESC
 LIMIT 10
@@ -237,11 +263,13 @@ class TopIdentity:
 def load_top_identities(
     conn: sqlite3.Connection,
     cutoff: datetime,
-    interval: timedelta,
+    interval: timedelta | None = None,
 ) -> list[TopIdentity]:
     out: list[TopIdentity] = []
+    override_s = interval.total_seconds() if interval is not None else None
+    fallback_s = LEGACY_INTERVAL_FALLBACK.total_seconds()
     for identity, gpu_hours, idle_held, samples in conn.execute(
-        TOP_IDENTITIES_QUERY, (_ts(cutoff), interval.total_seconds())
+        TOP_IDENTITIES_QUERY, (_ts(cutoff), override_s, fallback_s)
     ):
         out.append(
             TopIdentity(
@@ -252,6 +280,12 @@ def load_top_identities(
             )
         )
     return out
+
+
+def _interval_source(interval: timedelta | None) -> str:
+    if interval is None:
+        return "recorded daemon interval (legacy rows fall back to 30s)"
+    return f"report --interval ({interval})"
 
 
 # ── §5 Heatmap ──────────────────────────────────────────────────

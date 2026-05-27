@@ -17,15 +17,15 @@ from pathlib import Path
 from typing import Literal
 
 from .nvml import NVMLNotAvailableError, _decode, _load_pynvml, nvml_init_error_message
+from .paths import DEFAULT_DB_PATH, expand_path, is_default_db_path
 
 type CheckStatus = Literal["ok", "warning", "error", "skipped"]
 type ReadinessMode = Literal["host", "unsupported"]
 type Which = Callable[[str], str | None]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 3.0
-DEFAULT_DB_PATH = Path("/tmp/gua.db")
 COLLECT_COMMAND = "gua daemon --interval 30s"
-REPORT_COMMAND = "gua report --since 1h --interval 30s"
+REPORT_COMMAND = "gua report --since 1h"
 
 
 @dataclass(slots=True)
@@ -392,10 +392,10 @@ def check_nvml(info: NVMLInfo) -> DoctorCheck:
 
 
 def probe_default_db(db_path: str | Path = DEFAULT_DB_PATH) -> tuple[DatabaseInfo, DoctorCheck]:
-    path = Path(db_path)
+    path = expand_path(db_path)
     display_path = str(path)
     parent = path.parent
-    is_default = path == DEFAULT_DB_PATH
+    is_default = is_default_db_path(path)
     try:
         exists = path.exists()
         is_file = path.is_file() if exists else False
@@ -432,12 +432,18 @@ def probe_default_db(db_path: str | Path = DEFAULT_DB_PATH) -> tuple[DatabaseInf
         size_bytes=size_bytes,
         error=error,
     )
-    if exists and is_file:
-        status: CheckStatus = "warning"
+    if exists and is_file and is_default:
+        status: CheckStatus = "ok"
+        summary = "present; daemon will append, report can read it"
+    elif exists and is_file:
+        status = "warning"
         summary = "present; daemon will refuse this path, report can read it"
     elif exists:
         status = "error"
         summary = "present but is not a regular file"
+    elif not parent_exists and is_default:
+        status = "ok"
+        summary = f"absent, parent directory will be created: {parent}"
     elif not parent_exists:
         status = "error"
         summary = f"absent, parent directory does not exist: {parent}"
@@ -605,9 +611,9 @@ def _recommended_commands_for(report: DoctorReport) -> dict[str, str]:
     database = checks["default_db"].details
     db_path = str(database.get("path", DEFAULT_DB_PATH))
     report_command = _report_command(db_path)
-    if database.get("exists") is True:
+    if database.get("exists") is True and database.get("is_default") is not True:
         return {"report": report_command}
-    if database.get("parent_writable") is False:
+    if database.get("parent_writable") is False and database.get("is_default") is not True:
         return {}
     return {
         "collect": _collect_command(db_path),
@@ -616,15 +622,15 @@ def _recommended_commands_for(report: DoctorReport) -> dict[str, str]:
 
 
 def _collect_command(db_path: str) -> str:
-    if Path(db_path) == DEFAULT_DB_PATH:
+    if is_default_db_path(db_path):
         return COLLECT_COMMAND
     return f"gua daemon --db {shlex.quote(db_path)} --interval 30s"
 
 
 def _report_command(db_path: str) -> str:
-    if Path(db_path) == DEFAULT_DB_PATH:
+    if is_default_db_path(db_path):
         return REPORT_COMMAND
-    return f"gua report --db {shlex.quote(db_path)} --since 1h --interval 30s"
+    return f"gua report --db {shlex.quote(db_path)} --since 1h"
 
 
 def _short_error(result: CommandResult) -> str:
@@ -660,16 +666,20 @@ def _unsupported_blockers(facts: DetectionFacts) -> list[str]:
         blockers.append("NVML initialized but reported zero GPUs.")
     if facts.database.exists and not facts.database.is_file:
         blockers.append(f"{facts.database.path} exists but is not a regular file.")
-    elif not facts.database.exists and not facts.database.parent_exists:
+    elif (
+        not facts.database.exists
+        and not facts.database.parent_exists
+        and not facts.database.is_default
+    ):
         blockers.append(f"The parent directory for {facts.database.path} does not exist.")
     return blockers
 
 
 def _host_warnings(facts: DetectionFacts) -> list[str]:
     warnings: list[str] = []
-    if facts.database.exists and facts.database.is_file:
+    if facts.database.exists and facts.database.is_file and not facts.database.is_default:
         warnings.append(
-            f"{facts.database.path} already exists; `gua daemon` will refuse "
+            f"{facts.database.path} already exists; `gua daemon --db PATH` will refuse "
             "this path until it is removed or another --db path is provided."
         )
     elif (

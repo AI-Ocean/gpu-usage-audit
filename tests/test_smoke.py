@@ -18,7 +18,6 @@ import pytest
 
 from gpu_usage_audit import __version__
 from gpu_usage_audit.__main__ import (
-    DEFAULT_DB_PATH,
     DISPLAY_COMMAND_ENV,
     _duration,
     _pid_is_managed_daemon,
@@ -30,6 +29,7 @@ from gpu_usage_audit.__main__ import (
 )
 from gpu_usage_audit.doctor import DoctorCheck, DoctorPlan, DoctorReport
 from gpu_usage_audit.nvml import NVMLNotAvailableError
+from gpu_usage_audit.paths import DEFAULT_DB_PATH
 
 
 def test_version_string_is_nonempty() -> None:
@@ -45,10 +45,12 @@ def test_parser_registers_subcommands() -> None:
         assert ns.command == cmd
 
 
-def test_daemon_and_report_default_to_tmp_gua_db() -> None:
+def test_daemon_and_report_default_to_home_gua_db() -> None:
     p = build_parser()
+    assert Path.home() / ".gua" / "gua.db" == DEFAULT_DB_PATH
     assert p.parse_args(["daemon"]).db == str(DEFAULT_DB_PATH)
     assert p.parse_args(["report"]).db == str(DEFAULT_DB_PATH)
+    assert p.parse_args(["report"]).interval is None
 
 
 def test_pyproject_registers_gua_entry_point() -> None:
@@ -74,6 +76,7 @@ def test_gua_parser_registers_command_surface() -> None:
     for cmd in ("daemon", "start", "status", "stop", "report", "demo", "version", "help"):
         ns = p.parse_args([cmd])
         assert ns.command == cmd
+    assert p.parse_args(["report"]).interval is None
 
 
 def _required_args_for(cmd: str) -> list[str]:

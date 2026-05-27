@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .model import HostMeta, Snapshot
@@ -29,10 +29,17 @@ CREATE TABLE IF NOT EXISTS host (
     last_seen      DATETIME NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS daemon_run (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at       DATETIME NOT NULL,
+    interval_seconds REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS gpu_sample (
     ts        DATETIME NOT NULL,
     gpu_uuid  TEXT     NOT NULL,
-    util_pct  INTEGER  NOT NULL
+    util_pct  INTEGER  NOT NULL,
+    run_id    INTEGER REFERENCES daemon_run(id)
 );
 
 CREATE TABLE IF NOT EXISTS proc_sample (
@@ -40,7 +47,8 @@ CREATE TABLE IF NOT EXISTS proc_sample (
     gpu_uuid      TEXT     NOT NULL,
     pid           INTEGER  NOT NULL,
     mem_used_mb   INTEGER  NOT NULL,
-    loginuid_user TEXT
+    loginuid_user TEXT,
+    run_id        INTEGER REFERENCES daemon_run(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_gpu_sample_uuid_ts  ON gpu_sample(gpu_uuid, ts);
@@ -74,7 +82,42 @@ def open_db(path: str | Path) -> sqlite3.Connection:
         raise RuntimeError(f"expected journal_mode=wal, got {mode!r}")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
+    _migrate_schema(conn)
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply additive migrations for DBs created before interval metadata."""
+    _ensure_column(conn, "gpu_sample", "run_id", "INTEGER")
+    _ensure_column(conn, "proc_sample", "run_id", "INTEGER")
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def start_daemon_run(
+    conn: sqlite3.Connection,
+    started_at: datetime,
+    interval: timedelta,
+) -> int:
+    """Record one daemon run and return its row id for subsequent samples."""
+    cur = conn.execute(
+        "INSERT INTO daemon_run(started_at, interval_seconds) VALUES(?, ?)",
+        (_ts(started_at), interval.total_seconds()),
+    )
+    conn.commit()
+    run_id = cur.lastrowid
+    if run_id is None:
+        raise RuntimeError("failed to create daemon_run row")
+    return run_id
 
 
 def upsert_host(conn: sqlite3.Connection, host: HostMeta, last_seen: datetime) -> None:
@@ -109,6 +152,8 @@ def write_snapshot(
     ts: datetime,
     host: HostMeta,
     snap: Snapshot,
+    *,
+    run_id: int | None = None,
 ) -> None:
     """한 틱의 Snapshot + 호스트 메타를 *단일 트랜잭션* 으로 적재한다.
 
@@ -124,12 +169,15 @@ def write_snapshot(
         upsert_host(conn, host, ts)
         if snap.gpus:
             conn.executemany(
-                "INSERT INTO gpu_sample(ts, gpu_uuid, util_pct) VALUES(?,?,?)",
-                [(ts_str, g.uuid, g.util_pct) for g in snap.gpus],
+                "INSERT INTO gpu_sample(ts, gpu_uuid, util_pct, run_id) VALUES(?,?,?,?)",
+                [(ts_str, g.uuid, g.util_pct, run_id) for g in snap.gpus],
             )
         if snap.procs:
             conn.executemany(
-                "INSERT INTO proc_sample(ts, gpu_uuid, pid, mem_used_mb, loginuid_user) "
-                "VALUES(?,?,?,?,?)",
-                [(ts_str, p.gpu_uuid, p.pid, p.mem_used_mb, p.loginuid_user) for p in snap.procs],
+                "INSERT INTO proc_sample(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, run_id) "
+                "VALUES(?,?,?,?,?,?)",
+                [
+                    (ts_str, p.gpu_uuid, p.pid, p.mem_used_mb, p.loginuid_user, run_id)
+                    for p in snap.procs
+                ],
             )

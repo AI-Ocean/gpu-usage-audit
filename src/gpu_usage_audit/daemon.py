@@ -21,7 +21,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TextIO
 
-from .db import write_snapshot
+from .db import start_daemon_run, write_snapshot
 from .model import HostMeta
 from .summarize import summarize
 from .tier import Tier
@@ -59,6 +59,7 @@ def _tick(
     ts: datetime,
     n: int,
     out: TextIO,
+    run_id: int,
 ) -> None:
     """한 틱: tier.collect → loginuid 해석 → 적재 → 한 줄 로그."""
     snap = tier.collect(ts)
@@ -66,7 +67,7 @@ def _tick(
     for p in snap.procs:
         if p.loginuid_user is None:
             p.loginuid_user = lookup(p.pid)
-    write_snapshot(db, ts, host, snap)
+    write_snapshot(db, ts, host, snap, run_id=run_id)
 
     classes = "  ".join(f"{c.uuid}={c.klass.value:<10}" for c in summarize(snap))
     ts_short = ts.strftime("%H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
@@ -108,12 +109,16 @@ def run_daemon(
 
     next_at = time.monotonic()
     n = 0
+    run_id: int | None = None
     while not stop.is_set():
         if max_ticks is not None and n >= max_ticks:
             break
 
+        if run_id is None:
+            run_id = start_daemon_run(db, datetime.now(UTC), interval)
+
         try:
-            _tick(tier, db, host, lookup, datetime.now(UTC), n, out)
+            _tick(tier, db, host, lookup, datetime.now(UTC), n, out, run_id)
         except Exception:
             logger.exception("tick %d failed; continuing", n)
         n += 1
