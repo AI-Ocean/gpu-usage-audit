@@ -1,67 +1,53 @@
 # gpu-usage-audit
 
-A single-host diagnostic daemon that records NVIDIA GPU utilization to
-SQLite and produces a retrospective report separating *active* use from
-*allocated-but-idle* ("idle-held") and *truly idle* (no process at all).
+Single-host NVIDIA GPU usage audit for finding **idle-held** GPUs: cards that look idle by utilization, but are still held by a process through GPU memory.
 
-Conventional dashboards collapse the latter two. **Surfacing
-idle-held as its own number is the entire point.** Someone left a
-Jupyter notebook open with an 8 GB tensor on the GPU and went to
-lunch — `nvidia-smi` will show 1% utilization, but the card is
-*unusable* by anyone else. This tool measures that.
+[![PyPI](https://img.shields.io/pypi/v/gpu-usage-audit.svg)](https://pypi.org/project/gpu-usage-audit/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/gpu-usage-audit/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/AI-Ocean/gpu-usage-audit)](https://github.com/AI-Ocean/gpu-usage-audit/releases)
 
-> **Status:** bare-metal 1.0.
-> `gua doctor` checks only the current machine. `daemon` records NVML
-> telemetry from the current NVIDIA host, `report` reads the resulting
-> SQLite database, and `demo` runs anywhere with fake telemetry. The Go
-> v0.1.0 implementation remains downloadable at tag `v0.1.0` / branch
-> [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
+[English](README.md) · [한국어](README.ko.md) · [Releases](https://github.com/AI-Ocean/gpu-usage-audit/releases) · [Issues](https://github.com/AI-Ocean/gpu-usage-audit/issues)
 
-## Install
+---
 
-The recommended install path is PyPI via uv.
+## About
 
-Requires [uv](https://docs.astral.sh/uv/). In normal online environments,
-uv creates the isolated tool environment and manages the needed Python
-runtime. If Python downloads are disabled by local policy, install Python
-3.12+ first.
+gpu-usage-audit records local NVIDIA/NVML telemetry into SQLite and renders a retrospective report that separates GPU card-ticks into:
+
+- `active`: utilization is doing real work
+- `idle-held`: utilization is low, but a process still holds GPU memory
+- `truly-idle`: no meaningful GPU process memory is present
+
+The second category is the point. A notebook can sit at 1% SM utilization while keeping an 8 GB tensor allocated. Conventional dashboards usually flatten that into “idle”; this tool shows that the card is effectively unavailable.
+
+## Features
+
+- Single-host, bare-metal NVIDIA GPU audit
+- `gua doctor` readiness check for `/dev/nvidia*`, `nvidia-smi`, NVML, and DB path
+- Background collector with `gua daemon`, `gua status`, and `gua stop`
+- SQLite history database at `~/.gua/gua.db` by default
+- Report sections for headline split, idle capacity, per-GPU state, top identities, and time-of-day heatmap
+- Daemon interval metadata stored per run, so reports compute GPU-hours correctly across mixed 30s / 10s runs
+- GPU-less `gua demo` command with deterministic fake telemetry
+- No cluster runtime dependency; no Kubernetes, Slurm, Docker, or remote-node scan in the 1.0 scope
+
+## Installation
+
+The recommended install path is PyPI via [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv tool install gpu-usage-audit
-
-gua doctor
-gua daemon --interval 30s
-gua status
-gua report --since 1h
-gua stop
 ```
 
-`gua doctor` is intentionally read-only. It checks only the current
-machine: OS/kernel/Python, `/dev/nvidia*`, `nvidia-smi -L`, NVML
-load/init/device count/driver version, and the database path the daemon
-would write to. The default is `~/.gua/gua.db`; pass `gua doctor --db PATH`
-when you plan to use a different daemon database.
-
-Use `gua doctor --json` for the same report in a machine-readable form.
-The JSON includes local paths, command stderr, and `nvidia-smi -L` output
-with GPU UUIDs, so review it before sharing it outside your team.
-`gua doctor` does not need `sudo`; run it as the same user that will run
-the daemon.
-
-Available `gua` subcommands: `doctor`, `daemon`, `start`, `status`,
-`stop`, `report`, `demo`, `version`, `help`.
-
-Update or remove the installed tool with uv:
+Update or remove it with:
 
 ```sh
 uv tool upgrade gpu-usage-audit
 uv tool uninstall gpu-usage-audit
 ```
 
-`uv tool uninstall gpu-usage-audit` removes the installed Python tool and
-its `gua` / `gpu-usage-audit` commands.
-
-GitHub Release assets are also available for manual download:
+Manual wheel downloads are available from GitHub Releases:
 
 ```sh
 BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.0.3"
@@ -74,18 +60,41 @@ sha256sum -c SHA256SUMS --ignore-missing
 uvx --from "./$WHEEL" gua doctor
 ```
 
-## What you get
+## Quick Start
 
+On an NVIDIA GPU host:
+
+```sh
+gua doctor
+gua daemon --interval 30s
+gua status
+gua report --since 1h
+gua stop
 ```
+
+`gua doctor` is read-only. It does not need `sudo`; run it as the same user that will run the daemon.
+
+Default local state lives under `~/.gua/`:
+
+| Path | Purpose |
+| --- | --- |
+| `~/.gua/gua.db` | SQLite history database |
+| `~/.gua/gua.pid` | background daemon PID file |
+| `~/.gua/gua.log` | daemon stdout/stderr log |
+
+The default DB is an appendable local history database. Later daemon runs append to it. If you pass a custom `--db PATH`, daemon still refuses an existing file to avoid mixing ad hoc runs by accident.
+
+## Report Preview
+
+```text
 $ gua report --since 1h
 gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 
 §1 Headline
   basis: one sample = one GPU card at one daemon tick
   rules: active >=10% util; idle-held <10% util with >100 MB process memory
-  █████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░
   active       █   15.7%
-  idle-held    ▒   45.1%       ← this is the number conventional tools miss
+  idle-held    ▒   45.1%
   truly-idle   ░   39.2%
   (51 samples)
 
@@ -95,184 +104,48 @@ gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
   truly-idle: ~0.12 GPU-hours, ~1.00 GPUs equivalently free
 
 §3 Per-GPU
-  per-card share of samples in the same three states
-  GPU-0     active  47.1%  idle-held  35.3%  truly-idle  17.6%
-  GPU-1     active   0.0%  idle-held 100.0%  truly-idle   0.0%
-  GPU-2     active   0.0%  idle-held   0.0%  truly-idle 100.0%
-
 §4 Top identities
-  one identity counts once per GPU/tick after its processes are summed
-  identity              gpu-hours   idle-held   samples
-  alice                      0.42       42.9%        51
-  bob                        0.28      100.0%        34
-
 §5 Time-of-day heatmap (UTC)
-  darker means higher active share; blank means no samples
-        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
-  Mon               .
 ```
 
-The 3-bar collapses every card × every tick over the window into the
-active / idle-held / truly-idle split. **`idle-held` rows are the
-embarrassing category**: a process is holding GPU memory but the SM
-utilization is below 10%. §2 converts those card-ticks into GPU-hours
-using the interval recorded by the daemon; §4 groups process rows by
-identity, GPU, and tick before ranking users, so multiple same-user
-processes on one GPU/tick count once.
+Reports can run while the daemon is writing; SQLite WAL mode handles concurrent reads. Reports also work after the daemon has stopped, as long as the DB file exists.
 
-## Demo (no GPU required)
+## Commands
 
-The `demo` subcommand records 30 ticks of fake telemetry and prints the
-report — all in one process, no second shell needed.
+| Command | Description |
+| --- | --- |
+| `gua doctor` | Check local NVIDIA/NVML readiness and DB path status |
+| `gua daemon` | Start background collection on the local NVIDIA host |
+| `gua start` | Alias for `gua daemon` |
+| `gua status` | Show whether the managed background collector is running |
+| `gua stop` | Stop the managed background collector |
+| `gua report` | Render the retrospective report from SQLite |
+| `gua demo` | Generate a fake local report without a GPU |
+| `gua version` | Print version |
+
+## Important Options
+
+```sh
+gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
+gua daemon --foreground [--db PATH] [--interval D]
+gua report [--db PATH] [--since D] [--interval D] [--width N]
+gua demo [--db PATH] [--ticks N] [--interval D]
+```
+
+- `--interval` on `daemon` controls sampling cadence. Default: `30s`.
+- `--interval` on `report` is optional. New DB rows use the interval recorded by each daemon run. Use report `--interval D` only as an override or for legacy rows without interval metadata.
+- `--since` accepts `ms`, `s`, `m`, `h`, and `d`, with no upper bound.
+- `--foreground` is intended for systemd and debugging.
+
+## Demo Without a GPU
 
 ```sh
 gua demo
 ```
 
-The bundled `FakeTier` produces a deterministic 5-tick workload —
-active learning → idle-held memory → cleanup — so the output is the
-same every run. Adjust the shape with `--ticks N` and `--interval D`.
+The demo records deterministic fake telemetry and immediately prints the report shape.
 
-## Real NVIDIA GPU host
-
-On an NVIDIA host, start with doctor:
-
-```sh
-gua doctor
-```
-
-Doctor should show the current machine, visible `/dev/nvidia*` device
-files, `nvidia-smi -L` GPUs, NVML device count, and `~/.gua/gua.db` status.
-`nvidia-ml-py` is installed by default with `gpu-usage-audit`; if doctor
-reports that `pynvml` is not importable, reinstall the isolated tool
-environment:
-
-```sh
-uv tool install --force gpu-usage-audit
-```
-
-If `pynvml` imports but NVML init fails, fix the host NVIDIA driver
-installation instead. `libnvidia-ml.so.1` must be available and match the
-loaded kernel driver; `nvidia-smi -L` should list GPUs before the daemon
-can collect real telemetry.
-
-Then run the collector:
-
-```sh
-gua daemon --interval 30s
-gua status
-```
-
-Run the report:
-
-```sh
-gua report --since 1h
-```
-
-Stop the background collector when the collection window is done:
-
-```sh
-gua stop
-```
-
-If `--db` is omitted, `daemon`, `report`, `status`, and `stop` use
-`~/.gua/` for local user state: `gua.db`, `gua.pid`, and `gua.log`. The
-default database is a local history database, so later daemon runs append
-to it and reports read the accumulated data. If you pass a custom
-`--db PATH`, `daemon` still refuses an existing file to avoid silently
-appending to an ad hoc collection run.
-
-> The daemon requires the NVIDIA driver and `libnvidia-ml.so.1`. On a
-> driverless host it exits with a friendly NVML initialization error. For
-> a driverless box, use `demo` instead.
-
-## Usage
-
-`gua` has commands sharing one SQLite file. The `gpu-usage-audit` entry
-point remains installed for compatibility, but new examples use `gua`.
-
-| Command  | What it does                                                |
-| -------- | ----------------------------------------------------------- |
-| `daemon` | Starts the collector in the background. Samples real NVML telemetry on every tick and writes to the local history database. NVIDIA host required. |
-| `start`  | Alias for `gua daemon`. |
-| `status` | Shows whether the background collector PID is still running. Also clears a stale PID file when it points to a missing or unrelated process. |
-| `stop`   | Stops the background collector with SIGTERM. |
-| `report` | One-shot read against the accumulated database. Safe to run **while the daemon is still writing** — SQLite WAL mode handles the concurrency. |
-| `demo`   | Self-contained showcase. Records N fake ticks and immediately prints the report. No GPU, no second shell, no operational meaning — just to see the output shape. |
-
-### `daemon` / `start`
-
-```
-gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
-gua start  [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
-gua daemon --foreground [--db PATH] [--interval D]
-```
-
-- `--db PATH` (default `~/.gua/gua.db`) — SQLite history database. The
-  default path is appended across daemon runs; a custom path still exits
-  with an error if the file already exists. WAL mode is enabled
-  automatically.
-- `--interval D` (default `30s`) — how often to sample. Accepts `30s`,
-  `1m`, `200ms`, etc.
-- `--pid-file PATH` (default `~/.gua/gua.pid`) — background PID file.
-- `--log-file PATH` (default `~/.gua/gua.log`) — stdout/stderr from the
-  background collector.
-- `--foreground` — keep the collector attached to the current process.
-  Use this for systemd or debugging.
-
-By default, `gua daemon` returns after the collector starts. Each tick is
-written to the log file; on shutdown the cumulative row count is written
-there too. `gua daemon --foreground` prints the tick summaries directly
-to the terminal and exits on Ctrl+C, SIGTERM, or `systemctl stop`.
-`gua status` and `gua stop` verify that the PID file points to the
-managed collector before acting on it; stale PID files are cleared.
-
-### `report`
-
-```
-gua report [--db PATH] [--since D] [--interval D] [--width N]
-```
-
-- `--db PATH` (default `~/.gua/gua.db`) — same SQLite file the daemon
-  writes to. The report exits with an error if the file does not exist.
-- `--since D` (default `1h`) — the report window. **No upper bound** —
-  `--since 365d` is accepted. The effective window is min(`--since`, age
-  of oldest sample), so passing a huge `--since` is the same as "all
-  data". Units: `ms`, `s`, `m`, `h`, `d` (no `w`; use `7d`).
-- `--interval D` — optional override for §2 (Idle capacity) and §4 (Top
-  identities). By default, reports use the interval recorded by each daemon
-  run. Legacy rows without interval metadata fall back to 30s.
-- `--width N` (default `60`) — width of the §1 three-bar in characters.
-
-### `demo`
-
-```
-gua demo [--db PATH] [--ticks N] [--interval D]
-```
-
-- `--db PATH` (optional) — if omitted, a fresh temporary database is
-  created and its path is printed to stderr.
-- `--ticks N` (default `30`) — how many fake ticks to record before
-  printing the report.
-- `--interval D` (default `1s`) — tick spacing.
-
-### Operational notes
-
-- **Intervals are recorded.** New daemon runs store their sampling interval
-  in the database, so `gua report` can compute GPU-hours without repeating
-  `--interval`. Use report `--interval D` only to override or to interpret
-  legacy rows.
-- **Let it run for a while.** §1/§3 are meaningful after one tick;
-  §4 (Top identities) needs hours; §5 (Heatmap) needs days.
-- **WAL leaves sidecar files** (`gua.db-wal`, `gua.db-shm`). They are
-  cleaned up automatically when the last connection closes.
-- **DB size**: ~50 MB per host per 30 days at 12 GPUs (extrapolated
-  from Go v0.1.0; not yet re-measured for the Python rewrite).
-
-### Running as a systemd service
-
-For a long-running deployment, drop a unit file in
-`/etc/systemd/system/gpu-usage-audit.service`:
+## Systemd Example
 
 ```ini
 [Unit]
@@ -289,56 +162,45 @@ User=gua
 WantedBy=multi-user.target
 ```
 
-Then `systemctl enable --now gpu-usage-audit`.
+Then run:
 
-## How the classification works
-
-Each tick of the daemon records:
-
-- per-card: `util_pct` (SM utilization)
-- per-process: `mem_used_mb` per `(card, pid)`
-
-The report aggregates per card × per tick:
-
-```
-util >= 10                  → active        (compute is happening)
-util <  10 AND mem >  100   → idle-held     (memory is held, SM is cold)
-util <  10 AND mem <= 100   → truly-idle    (the card is genuinely free)
+```sh
+systemctl enable --now gpu-usage-audit
 ```
 
-The 100 MB threshold absorbs the PyTorch/TF runtime baseline so
-importing torch doesn't count as "holding the GPU".
+## Classification Rules
+
+Each daemon tick records per-card utilization and per-process GPU memory. The report classifies each GPU card at each tick with these rules:
+
+```text
+util >= 10                  -> active
+util <  10 AND mem >  100   -> idle-held
+util <  10 AND mem <= 100   -> truly-idle
+```
+
+The 100 MB threshold absorbs runtime baselines such as importing PyTorch or TensorFlow.
 
 ## Development
-
-Requires [uv](https://docs.astral.sh/uv/) (uv pins the Python version
-automatically; `requires-python = ">=3.12"`).
 
 ```sh
 git clone https://github.com/AI-Ocean/gpu-usage-audit
 cd gpu-usage-audit
-uv sync                          # create .venv, install dev deps
-uv run pytest                    # run the test suite
-uv run ruff check                # lint
-uv run mypy                      # type-check (strict)
-uv run gua demo                  # see the report shape locally
+uv sync
+uv run python -m pytest
+uv run ruff check
+uv run ruff format --check
+uv run python -m mypy
+uv run gua demo
 ```
 
-CI runs ruff + format check + mypy + pytest, then builds and smoke-tests
-the wheel on every push and PR. Tag pushes (`v*`) rerun the same checks,
-build sdist + wheel, smoke-test the wheel, and create a GitHub Release
-with auto-generated notes. Release tags also publish the wheel and sdist
-to PyPI through Trusted Publishing.
+CI runs ruff, format check, mypy, pytest, build, and wheel smoke tests. Tag pushes (`v*`) build release assets and publish to PyPI through Trusted Publishing.
 
 ## Non-goals
 
-This is a **single-host retrospective** tool. Live dashboards, multi-host
-aggregation, quotas, Kubernetes cluster scans, Slurm scheduler joins,
-Docker/Podman fallback runtimes, and pod-name resolution are out of scope
-for bare-metal 1.0. Those belong above the host layer. If this tool
-surfaces enough idle-held to make scheduling worth solving, see
-[ocean-all](https://github.com/AI-Ocean).
+This is a single-host retrospective tool. Live dashboards, multi-host aggregation, quotas, Kubernetes cluster scans, Slurm joins, Docker/Podman runtime fallback, and pod-name resolution are outside the bare-metal 1.0 scope.
+
+The Go v0.1.0 implementation remains available at tag `v0.1.0` and branch [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE).
