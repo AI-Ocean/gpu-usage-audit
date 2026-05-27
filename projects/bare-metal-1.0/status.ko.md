@@ -1,16 +1,15 @@
 # Bare Metal 1.0 Status
 
-갱신일: 2026-05-15
+갱신일: 2026-05-27
 
 ## 요약
 
-Bare Metal 1.0은 단일 NVIDIA 베어메탈 호스트만 대상으로 하는 형태로 1.0.1까지
-릴리스됐고, 현재 1.0.2 release prep을 진행 중이다. `v1.0.1` GitHub Release와
-PyPI publish는 완료됐고, 사용자가 실제 NVIDIA host에서 telemetry 수집이 정상
-동작하는 것도 확인했다.
+Bare Metal 1.0은 단일 NVIDIA 베어메탈 호스트만 대상으로 하는 형태로 1.0.2까지
+릴리스됐다. `v1.0.2` GitHub Release와 PyPI publish가 완료됐고, 사용자가 실제
+NVIDIA host에서 telemetry 수집이 정상 동작하는 것도 확인했다.
 
-1.0.2 후보는 1.0.1 이후 코드 퀄리티 cleanup을 배포하기 위한 patch release다.
-주요 초점은 background daemon PID 안전성, report 의미 가시성, 내부 문서 정합성이다.
+1.0.2는 1.0.1 이후 코드 퀄리티 cleanup을 배포한 patch release다. 주요 초점은
+background daemon PID 안전성, report 의미 가시성, 내부 문서 정합성이었다.
 
 ## 구현 상태
 
@@ -21,12 +20,37 @@ PyPI publish는 완료됐고, 사용자가 실제 NVIDIA host에서 telemetry �
 | Packaging UX | 완료 | `nvidia-ml-py`가 기본 dependency이고 `nvml` extra는 빈 compatibility alias. |
 | `gua` command surface | 완료 | `doctor`, `daemon`, `start`, `status`, `stop`, `report`, `demo` 제공. |
 | Background daemon UX | 완료 | `gua daemon`은 기본 백그라운드 실행, `--foreground`는 systemd/debug용. |
-| `daemon`/`report` DB UX | 완료 | 기본 DB는 `/tmp/gua.db`; daemon은 기존 DB를 거부하고 report는 없는 DB를 거부. |
+| `daemon`/`report` DB UX | 진행 중 | 기본 상태 경로를 `~/.gua/`로 옮기고, 기본 DB는 append 가능한 history DB로 전환 중. custom `--db` 기존 파일은 계속 거부. |
 | README bare-metal 문서 | 완료 | install, runbook, systemd 예시, 운영 notes가 1.0.2 기준. |
-| Release | 진행 중 | package version은 `1.0.2`; local build/wheel smoke 완료, release prep PR과 tag publish가 남음. |
+| Release | 완료 | `v1.0.2` GitHub Release와 PyPI publish 완료. |
 | NVIDIA host acceptance | 완료 | 실제 NVIDIA host에서 수집 정상 동작 확인. |
 
 ## 마지막 확인 결과
+
+2026-05-27 현재 작업 트리 로컬 검증:
+
+```sh
+uv run ruff check
+uv run ruff format --check
+uv run python -m mypy
+uv run python -m pytest
+env GITHUB_REF_NAME=v1.0.2 uv run python scripts/check-tag-version.py
+uv build --out-dir /tmp/gua-dist-current
+bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-current/gpu_usage_audit-1.0.2-py3-none-any.whl
+```
+
+결과:
+
+- `ruff check`: pass.
+- `ruff format --check`: 26 files already formatted.
+- `mypy`: no issues in 25 source files.
+- `pytest`: 124 passed.
+- tag-version check: `v1.0.2`와 `pyproject.toml` version 일치.
+- `uv build`: sdist/wheel build 성공.
+- wheel smoke: 성공.
+
+현재 로컬 환경에서는 `uv run mypy`, `uv run pytest` direct entrypoint가 꼬여 있어
+검증 명령은 `uv run python -m mypy`, `uv run python -m pytest` 경로를 사용했다.
 
 2026-05-15 1.0.2 release prep 로컬 검증:
 
@@ -108,13 +132,13 @@ bash scripts/smoke-dist-wheel.sh /tmp/gua-dist-1.0.1-status/gpu_usage_audit-1.0.
 - `/dev/nvidia*` 없음.
 - `nvidia-smi`가 PATH에 없음.
 - NVML init 실패: `libnvidia-ml.so.1` 없음.
-- `/tmp/gua.db`가 이미 있어 daemon은 기본 경로로 시작하지 않음.
+- 기본 DB는 `~/.gua/gua.db`로 이동 중이며, 기본 경로에서는 기존 DB에 append한다.
 
 이 결과는 로컬 환경 한계이며, 제품 regression으로 보지 않는다.
 
 ## 다음 작업
 
-1. 1.0.2 release prep PR에서 version, README release asset 예시, CHANGELOG를 갱신한다.
-2. `uv run ruff check`, `uv run ruff format --check`, `uv run mypy`, `uv run pytest`,
-   `uv build`, wheel smoke, tag-version check를 다시 실행한다.
-3. PR merge 후 `v1.0.2` tag를 push해 GitHub Release와 PyPI publish workflow를 실행한다.
+1. 현재 작업 트리의 untracked 파일(`package.json`, `package-lock.json`, `project_report.md`)이
+   의도된 산출물인지 확인하고 track/delete 여부를 결정한다.
+2. `~/.gua` 기본 경로와 recorded interval 변경을 1.0.3 patch 후보로 검증한다.
+3. 기본 검증은 `ruff`, `mypy`, `pytest`, tag-version check, build, wheel smoke 순서로 유지한다.

@@ -260,9 +260,7 @@ def test_custom_db_path_is_rendered_and_shell_quoted(tmp_path: Path) -> None:
     quoted = f"'{db_path}'"
     assert f"target: {db_path}" in rendered
     assert f"collect: gua daemon --db {quoted} --interval 30s" in rendered
-    assert (
-        f"report after collecting: gua report --db {quoted} --since 1h --interval 30s" in rendered
-    )
+    assert f"report after collecting: gua report --db {quoted} --since 1h" in rendered
 
 
 def test_nvidia_smi_counts_mig_instances(tmp_path: Path) -> None:

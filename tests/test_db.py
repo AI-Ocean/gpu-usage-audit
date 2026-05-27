@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from gpu_usage_audit.db import open_db, write_snapshot
+from gpu_usage_audit.db import open_db, start_daemon_run, write_snapshot
 from gpu_usage_audit.model import GPUSample, HostMeta, ProcSample, Snapshot
 
 
@@ -47,12 +47,37 @@ def test_open_db_enables_wal_and_creates_indexes(db: sqlite3.Connection) -> None
     assert {"idx_gpu_sample_uuid_ts", "idx_proc_sample_uuid_ts"} <= idx
 
 
-def test_open_db_creates_three_tables(db: sqlite3.Connection) -> None:
+def test_open_db_creates_runtime_tables(db: sqlite3.Connection) -> None:
     tables = {
         row[0]
         for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     }
-    assert {"host", "gpu_sample", "proc_sample"} <= tables
+    assert {"host", "daemon_run", "gpu_sample", "proc_sample"} <= tables
+
+
+def test_start_daemon_run_and_write_snapshot_store_run_id(
+    db: sqlite3.Connection,
+    host: HostMeta,
+) -> None:
+    run_id = start_daemon_run(
+        db,
+        datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC),
+        timedelta(seconds=17),
+    )
+    write_snapshot(
+        db,
+        datetime(2026, 5, 11, 12, 0, 1, tzinfo=UTC),
+        host,
+        Snapshot(
+            gpus=[GPUSample(uuid="GPU-0", util_pct=2)],
+            procs=[ProcSample(gpu_uuid="GPU-0", pid=100, mem_used_mb=70000)],
+        ),
+        run_id=run_id,
+    )
+
+    assert db.execute("SELECT interval_seconds FROM daemon_run").fetchone()[0] == 17.0
+    assert db.execute("SELECT run_id FROM gpu_sample").fetchone()[0] == run_id
+    assert db.execute("SELECT run_id FROM proc_sample").fetchone()[0] == run_id
 
 
 def test_write_snapshot_inserts_rows(db: sqlite3.Connection, host: HostMeta) -> None:

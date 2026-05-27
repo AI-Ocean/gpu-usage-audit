@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from gpu_usage_audit.db import open_db, write_snapshot
+from gpu_usage_audit.db import open_db, start_daemon_run, write_snapshot
 from gpu_usage_audit.model import GPUSample, HostMeta, HostRow, ProcSample, Snapshot
 from gpu_usage_audit.report import (
     load_headline,
@@ -148,6 +148,65 @@ def test_load_idle_capacity(db_loaded: sqlite3.Connection) -> None:
     assert _close(idle_capacity.truly_idle_gpu_hours, 2 * 10 / 3600)
     assert _close(idle_capacity.idle_held_equiv_gpus, 1.0)
     assert _close(idle_capacity.truly_idle_equiv_gpus, 0.5)
+
+
+def test_load_idle_capacity_uses_recorded_interval_by_default(tmp_path: Path) -> None:
+    conn = open_db(tmp_path / "recorded-interval.db")
+    try:
+        host = _fixture_host()
+        run_a = start_daemon_run(conn, BASE, timedelta(seconds=5))
+        run_b = start_daemon_run(conn, BASE + timedelta(minutes=1), timedelta(seconds=20))
+        write_snapshot(
+            conn,
+            BASE,
+            host,
+            Snapshot(
+                gpus=[GPUSample(uuid="GPU-0", util_pct=2)],
+                procs=[ProcSample(gpu_uuid="GPU-0", pid=100, mem_used_mb=70000)],
+            ),
+            run_id=run_a,
+        )
+        write_snapshot(
+            conn,
+            BASE + timedelta(minutes=1),
+            host,
+            Snapshot(
+                gpus=[GPUSample(uuid="GPU-0", util_pct=2)],
+                procs=[ProcSample(gpu_uuid="GPU-0", pid=100, mem_used_mb=70000)],
+            ),
+            run_id=run_b,
+        )
+
+        idle_capacity = load_idle_capacity(conn, BASE)
+        assert idle_capacity.samples == 2
+        assert _close(idle_capacity.idle_held_gpu_hours, (5 + 20) / 3600)
+
+        identities = load_top_identities(conn, BASE)
+        assert len(identities) == 1
+        assert _close(identities[0].gpu_hours, (5 + 20) / 3600)
+    finally:
+        conn.close()
+
+
+def test_load_idle_capacity_interval_override_wins_over_recorded_interval(tmp_path: Path) -> None:
+    conn = open_db(tmp_path / "override-interval.db")
+    try:
+        run_id = start_daemon_run(conn, BASE, timedelta(seconds=5))
+        write_snapshot(
+            conn,
+            BASE,
+            _fixture_host(),
+            Snapshot(
+                gpus=[GPUSample(uuid="GPU-0", util_pct=2)],
+                procs=[ProcSample(gpu_uuid="GPU-0", pid=100, mem_used_mb=70000)],
+            ),
+            run_id=run_id,
+        )
+
+        idle_capacity = load_idle_capacity(conn, BASE, timedelta(seconds=30))
+        assert _close(idle_capacity.idle_held_gpu_hours, 30 / 3600)
+    finally:
+        conn.close()
 
 
 # ── load_per_gpu ────────────────────────────────────────────────

@@ -71,7 +71,10 @@ def render_headline(
 def render_idle_capacity(w: TextIO, idle_capacity: IdleCapacity) -> None:
     print(file=w)
     print("§2 Idle capacity", file=w)
-    print("  converted from card-ticks to GPU-hours using the report --interval", file=w)
+    print(
+        f"  converted from card-ticks to GPU-hours using {idle_capacity.interval_source}",
+        file=w,
+    )
     if idle_capacity.samples == 0:
         print("  (no samples in window)", file=w)
         return

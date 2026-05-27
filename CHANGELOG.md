@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Changed default `gua` state paths to `~/.gua/gua.db`, `~/.gua/gua.pid`,
+  and `~/.gua/gua.log`; the default database now acts as an appendable local
+  history database.
+- Record daemon run intervals in SQLite and attach samples to a run, so
+  `gua report` uses recorded intervals by default. `--interval` is now an
+  override and a fallback for legacy rows without interval metadata.
+
 ## 1.0.2 - 2026-05-15
 
 - Hardened `gua status` and `gua stop` so stale PID files do not act on

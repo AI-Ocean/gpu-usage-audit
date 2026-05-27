@@ -34,17 +34,17 @@ from pathlib import Path
 from . import __version__
 from .daemon import install_signal_handlers, run_daemon
 from .db import open_db
-from .doctor import (
-    DEFAULT_DB_PATH as DOCTOR_DEFAULT_DB_PATH,
-)
-from .doctor import (
-    build_doctor_report,
-    doctor_report_to_dict,
-    render_doctor,
-)
+from .doctor import build_doctor_report, doctor_report_to_dict, render_doctor
 from .identity import system_user_lookup
 from .model import HostMeta
 from .nvml import NVMLNotAvailableError, NVMLTier
+from .paths import (
+    DEFAULT_DB_PATH,
+    DEFAULT_LOG_PATH,
+    DEFAULT_PID_PATH,
+    expand_path,
+    is_default_db_path,
+)
 from .render import (
     render_headline,
     render_heatmap,
@@ -70,9 +70,6 @@ _DURATION_UNITS = {
     "h": "hours",
     "d": "days",
 }
-DEFAULT_DB_PATH = DOCTOR_DEFAULT_DB_PATH
-DEFAULT_PID_PATH = Path("/tmp/gua.pid")
-DEFAULT_LOG_PATH = Path("/tmp/gua.log")
 DISPLAY_COMMAND_ENV = "GPU_USAGE_AUDIT_DISPLAY_COMMAND"
 LOCAL_ENV_KIND = "bare"
 STARTUP_CHECK_SECONDS = 0.3
@@ -108,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--db",
         default=str(DEFAULT_DB_PATH),
-        help=f"Path to a new SQLite database file [default: {DEFAULT_DB_PATH}]",
+        help=f"Path to SQLite database file [default: {DEFAULT_DB_PATH}]",
     )
     p_daemon.add_argument(
         "--interval",
@@ -136,8 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument(
         "--interval",
         type=_duration,
-        default=timedelta(seconds=30),
-        help="Daemon tick interval — for §2 Idle capacity / §4 time conversion [default: 30s]",
+        default=None,
+        help=(
+            "Override recorded daemon interval for §2 Idle capacity / §4 time conversion "
+            "[default: read from DB; legacy rows fall back to 30s]"
+        ),
     )
     p_report.add_argument(
         "--width",
@@ -180,7 +180,7 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db",
         default=str(DEFAULT_DB_PATH),
-        help=f"Path to a new SQLite database file [default: {DEFAULT_DB_PATH}]",
+        help=f"Path to SQLite database file [default: {DEFAULT_DB_PATH}]",
     )
     parser.add_argument(
         "--interval",
@@ -205,8 +205,11 @@ def _add_report_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--interval",
         type=_duration,
-        default=timedelta(seconds=30),
-        help="Daemon tick interval — for §2 Idle capacity / §4 time conversion [default: 30s]",
+        default=None,
+        help=(
+            "Override recorded daemon interval for §2 Idle capacity / §4 time conversion "
+            "[default: read from DB; legacy rows fall back to 30s]"
+        ),
     )
     parser.add_argument(
         "--width",
@@ -350,9 +353,9 @@ def _cmd_gua_daemon(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_start(args: argparse.Namespace) -> int:
-    db_path = Path(args.db)
-    pid_path = Path(args.pid_file)
-    log_path = Path(args.log_file)
+    db_path = expand_path(args.db)
+    pid_path = expand_path(args.pid_file)
+    log_path = expand_path(args.log_file)
 
     existing_pid = _read_pid(pid_path)
     if existing_pid is not None:
@@ -366,10 +369,10 @@ def _cmd_gua_start(args: argparse.Namespace) -> int:
             )
         _unlink_if_exists(pid_path)
 
-    if db_path.exists():
+    if db_path.exists() and not is_default_db_path(db_path):
         print(
             f"gua daemon: {db_path} already exists; "
-            "run `gua report` for existing data or choose another --db path.",
+            "run `gua report --db PATH` for existing data or choose another --db path.",
             file=sys.stderr,
         )
         return 2
@@ -417,8 +420,8 @@ def _cmd_gua_start(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_status(args: argparse.Namespace) -> int:
-    pid_path = Path(args.pid_file)
-    log_path = Path(args.log_file)
+    pid_path = expand_path(args.pid_file)
+    log_path = expand_path(args.log_file)
     pid = _read_pid(pid_path)
     if pid is None:
         print("gua daemon: not running")
@@ -441,7 +444,7 @@ def _cmd_gua_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_gua_stop(args: argparse.Namespace) -> int:
-    pid_path = Path(args.pid_file)
+    pid_path = expand_path(args.pid_file)
     pid = _read_pid(pid_path)
     if pid is None:
         print("gua daemon: not running")
@@ -490,14 +493,16 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         "display_command",
         os.environ.get(DISPLAY_COMMAND_ENV, "gpu-usage-audit daemon"),
     )
-    db_path = Path(args.db)
-    if db_path.exists():
+    db_path = expand_path(args.db)
+    if db_path.exists() and not is_default_db_path(db_path):
         print(
             f"{display_command}: {db_path} already exists; "
             "choose another --db path or remove the existing file before starting.",
             file=sys.stderr,
         )
         return 2
+    if is_default_db_path(db_path):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
     tier = NVMLTier()
     try:
         try:
@@ -505,7 +510,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         except NVMLNotAvailableError as e:
             print(f"{display_command}: {e}", file=sys.stderr)
             return 1
-        conn = open_db(args.db)
+        conn = open_db(db_path)
         try:
             host = HostMeta(
                 hostname=socket.gethostname() or "unknown",
@@ -534,7 +539,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
 def _cmd_report(args: argparse.Namespace) -> int:
     display_command = getattr(args, "display_command", "gpu-usage-audit report")
-    db_path = Path(args.db)
+    db_path = expand_path(args.db)
     if not db_path.exists():
         print(
             f"{display_command}: {db_path} does not exist; "
@@ -542,7 +547,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    conn = open_db(args.db)
+    conn = open_db(db_path)
     try:
         cutoff = datetime.now(UTC) - args.since
         host = load_host(conn)
@@ -573,7 +578,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         db_path = str(Path(tmpdir) / "demo.db")
         print(f"(using temporary database: {db_path})", file=sys.stderr)
     else:
-        db_path = args.db
+        db_path = str(expand_path(args.db))
 
     conn = open_db(db_path)
     try:
