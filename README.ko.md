@@ -121,6 +121,8 @@ gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 | `gua stop` | managed background collector 종료 |
 | `gua report` | SQLite에서 retrospective report 출력 |
 | `gua demo` | GPU 없이 fake telemetry 리포트 출력 |
+| `gua enroll` | 이 호스트를 GUA Board workspace에 연결 (optional cloud sync) |
+| `gua sync-once` | 한 snapshot을 수집해 latest 상태를 GUA Board로 push |
 | `gua version` | 버전 출력 |
 
 ## 주요 옵션
@@ -167,6 +169,28 @@ WantedBy=multi-user.target
 ```sh
 systemctl enable --now gpu-usage-audit
 ```
+
+## Cloud Sync (GUA Board, 선택)
+
+`gpu-usage-audit`은 기본적으로 완전히 로컬로 동작합니다. 여러 서버의 최신 GPU 가용 상태를 한 화면에서 보는 별도 서비스인 GUA Board를 함께 쓴다면, 호스트를 선택적으로 연결할 수 있습니다.
+
+```sh
+# 1. GUA Board 웹에서 서버를 등록하고 one-time enrollment token을 복사합니다.
+# 2. GPU 호스트에서:
+gua enroll --server-url https://board.example.com --enrollment-token <TOKEN>
+# 3. 현재 snapshot을 push (타이머로 주기 실행하거나 `gua daemon`과 함께):
+gua sync-once
+```
+
+동작 방식과 하지 않는 것:
+
+- `enroll`은 one-time token을 host-scoped write-only agent token으로 교환해 `~/.gua/cloud.json`(mode `0600`)에 저장합니다. 이 token은 이 호스트의 observation만 write할 수 있고, reservation/사용자/다른 host는 읽지 못합니다.
+- `sync-once`는 한 snapshot을 수집해 **먼저 로컬 DB에 기록한 뒤** latest 상태만 push합니다. push 실패는 로컬 write를 막거나 되돌리지 않습니다.
+- 항상 latest snapshot만 전송합니다. 과거 tick은 로컬에 남고 서버로 replay되지 않습니다.
+- process 정보는 PID, Linux user, process name(`/proc/<pid>/comm`), GPU memory로 제한되며 full command line은 절대 수집하지 않습니다.
+- cloud sync는 신규 런타임 의존성을 추가하지 않습니다(표준 라이브러리 사용).
+
+config/DB 경로는 `--config PATH` / `--db PATH`로 바꿀 수 있고, `gua sync-once --fake`로 GPU 없이 흐름을 확인할 수 있습니다.
 
 ## 분류 규칙
 

@@ -7,9 +7,16 @@ system_user_lookup 자체는 pwd.getpwuid 의 시스템 의존이 있어 e2e
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from gpu_usage_audit.identity import LOGIN_UID_UNSET, _parse_loginuid, system_user_lookup
+from gpu_usage_audit.identity import (
+    LOGIN_UID_UNSET,
+    _parse_loginuid,
+    system_process_name_lookup,
+    system_user_lookup,
+)
 
 
 @pytest.mark.parametrize(
@@ -31,3 +38,18 @@ def test_parse_loginuid(raw: str, want: int | None) -> None:
 def test_system_user_lookup_missing_proc_returns_none(tmp_path: object) -> None:
     # proc_root 는 존재하지만 PID 디렉토리/파일 없음 → None.
     assert system_user_lookup(99999, proc_root=tmp_path) is None  # type: ignore[arg-type]
+
+
+def test_system_process_name_lookup_reads_comm(tmp_path: Path) -> None:
+    pid_dir = tmp_path / "4242"
+    pid_dir.mkdir()
+    (pid_dir / "comm").write_text("python\n")
+    assert system_process_name_lookup(4242, proc_root=tmp_path) == "python"
+
+
+def test_system_process_name_lookup_missing_or_blank_returns_none(tmp_path: Path) -> None:
+    assert system_process_name_lookup(99999, proc_root=tmp_path) is None
+    blank = tmp_path / "1" / "comm"
+    blank.parent.mkdir()
+    blank.write_text("  \n")
+    assert system_process_name_lookup(1, proc_root=tmp_path) is None

@@ -32,13 +32,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import __version__
-from .daemon import install_signal_handlers, run_daemon
-from .db import open_db
+from .cloud.client import CloudError, claim_enrollment, post_observation
+from .cloud.config import (
+    CloudConfigError,
+    load_cloud_config,
+    save_cloud_config,
+)
+from .cloud.snapshot import build_observation_payload
+from .daemon import install_signal_handlers, resolve_proc_identities, run_daemon
+from .db import open_db, write_snapshot
 from .doctor import build_doctor_report, doctor_report_to_dict, render_doctor
-from .identity import system_user_lookup
+from .identity import system_process_name_lookup, system_user_lookup
 from .model import HostMeta
 from .nvml import NVMLNotAvailableError, NVMLTier
 from .paths import (
+    DEFAULT_CLOUD_CONFIG_PATH,
     DEFAULT_DB_PATH,
     DEFAULT_LOG_PATH,
     DEFAULT_PID_PATH,
@@ -329,6 +337,68 @@ def build_gua_parser() -> argparse.ArgumentParser:
     _add_demo_args(p_demo)
     p_demo.set_defaults(func=_cmd_demo)
 
+    p_enroll = sub.add_parser(
+        "enroll",
+        help="Connect this host to a GUA Board workspace (optional cloud sync)",
+    )
+    p_enroll.add_argument(
+        "--server-url",
+        required=True,
+        help="GUA Board base URL, e.g. https://board.example.com",
+    )
+    p_enroll.add_argument(
+        "--enrollment-token",
+        required=True,
+        help="One-time enrollment token issued by the GUA Board web UI",
+    )
+    p_enroll.add_argument(
+        "--config",
+        default=str(DEFAULT_CLOUD_CONFIG_PATH),
+        help=f"Cloud config path to write [default: {DEFAULT_CLOUD_CONFIG_PATH}]",
+    )
+    p_enroll.add_argument(
+        "--hostname",
+        default=None,
+        help="Reported hostname [default: system hostname]",
+    )
+    p_enroll.add_argument(
+        "--agent-version",
+        default=__version__,
+        help=f"Reported agent version [default: {__version__}]",
+    )
+    p_enroll.add_argument(
+        "--driver-version",
+        default=None,
+        help="Reported NVIDIA driver version [default: detected via NVML if available]",
+    )
+    p_enroll.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing cloud config",
+    )
+    p_enroll.set_defaults(func=_cmd_gua_enroll)
+
+    p_sync = sub.add_parser(
+        "sync-once",
+        help="Collect one snapshot and push the latest state to GUA Board",
+    )
+    p_sync.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help=f"Local SQLite history database [default: {DEFAULT_DB_PATH}]",
+    )
+    p_sync.add_argument(
+        "--config",
+        default=str(DEFAULT_CLOUD_CONFIG_PATH),
+        help=f"Cloud config path [default: {DEFAULT_CLOUD_CONFIG_PATH}]",
+    )
+    p_sync.add_argument(
+        "--fake",
+        action="store_true",
+        help="Use deterministic fake telemetry instead of NVML",
+    )
+    p_sync.set_defaults(func=_cmd_gua_sync_once)
+
     sub.add_parser("version", help="Print version")
     sub.add_parser("help", help="Show this message")
 
@@ -342,6 +412,145 @@ def _cmd_gua_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(doctor_report_to_dict(report), indent=2, sort_keys=True))
         return 0
     print(render_doctor(report))
+    return 0
+
+
+def _probe_driver_version_or_none() -> str | None:
+    """NVML 로 driver version 을 시도하되, GPU 없는 머신에서도 막지 않는다."""
+    tier = NVMLTier()
+    try:
+        return tier.probe()
+    except NVMLNotAvailableError:
+        return None
+    finally:
+        tier.close()
+
+
+def _cmd_gua_enroll(args: argparse.Namespace) -> int:
+    """one-time enrollment token 을 claim 해 host-scoped agent token 을 저장한다."""
+    config_path = expand_path(args.config)
+    if config_path.exists() and not args.force:
+        print(
+            f"gua enroll: cloud config already exists: {config_path}; pass --force to overwrite",
+            file=sys.stderr,
+        )
+        return 2
+
+    hostname = args.hostname or socket.gethostname() or "unknown"
+    driver_version = args.driver_version or _probe_driver_version_or_none()
+
+    try:
+        config = claim_enrollment(
+            server_url=args.server_url,
+            enrollment_token=args.enrollment_token,
+            hostname=hostname,
+            agent_version=args.agent_version,
+            driver_version=driver_version,
+        )
+    except (CloudError, CloudConfigError) as exc:
+        print(f"gua enroll: {exc}", file=sys.stderr)
+        return 1
+
+    # claim 은 성공했지만 저장에 실패하면 one-time enrollment token 은 이미 소비됨 —
+    # 새 token 이 필요함을 분명히 알린다 (재시도 시 혼란 방지).
+    try:
+        saved = save_cloud_config(config, config_path, overwrite=args.force)
+    except CloudConfigError as exc:
+        print(
+            f"gua enroll: enrollment succeeded but saving config failed: {exc}. "
+            "The one-time enrollment token is now used; request a new one to retry.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"gua enroll: connected host {config.display_name} ({config.host_id})")
+    print(f"  token prefix: {config.token_prefix}")
+    print(f"  config: {saved}")
+    print("  next: gua sync-once")
+    return 0
+
+
+def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
+    """한 틱을 수집해 local DB 에 기록한 뒤 latest snapshot 을 push 한다.
+
+    순서 불변식: collect → local DB write → cloud push. push 실패는 이미
+    커밋된 local write 를 되돌리지 않는다 (non-zero exit 로만 신호).
+    """
+    try:
+        config = load_cloud_config(args.config)
+    except CloudConfigError as exc:
+        print(f"gua sync-once: {exc}", file=sys.stderr)
+        return 2
+
+    observed_at = datetime.now(UTC)
+    if args.fake:
+        tier = FakeTier()
+        driver = tier.probe()
+        snap = tier.collect(observed_at)
+    else:
+        nvml_tier = NVMLTier()
+        try:
+            try:
+                driver = nvml_tier.probe()
+            except NVMLNotAvailableError as exc:
+                print(f"gua sync-once: {exc}", file=sys.stderr)
+                return 1
+            snap = nvml_tier.collect(observed_at)
+            resolve_proc_identities(snap.procs, system_user_lookup, system_process_name_lookup)
+        finally:
+            nvml_tier.close()
+
+    hostname = socket.gethostname() or "unknown"
+    host = HostMeta(
+        hostname=hostname,
+        env_kind=LOCAL_ENV_KIND,
+        driver_version=driver,
+        first_seen=observed_at,
+    )
+
+    # local write 먼저 — cloud push 와 무관하게 history 를 보존한다.
+    # one-shot sync 는 append-only 라 daemon 의 clobber 가드가 필요 없고, 부모
+    # 디렉토리를 만들어 두어 user-supplied --db 경로도 바로 동작하게 한다.
+    db_path = expand_path(args.db)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = open_db(db_path)
+    try:
+        write_snapshot(conn, observed_at, host, snap)
+    finally:
+        conn.close()
+
+    try:
+        payload = build_observation_payload(
+            snapshot=snap,
+            hostname=hostname,
+            driver_version=driver,
+            agent_version=__version__,
+            observed_at=observed_at,
+            host_id=config.host_id,
+            display_name=config.display_name,
+        )
+    except ValueError as exc:
+        print(
+            f"gua sync-once: local snapshot saved to {db_path}, "
+            f"but could not build a valid payload: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        post_observation(config, payload)
+    except CloudError as exc:
+        print(
+            f"gua sync-once: local snapshot saved to {db_path}, but cloud push failed: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"gua sync-once: pushed {len(payload['gpus'])} GPUs to "
+        f"{config.display_name} ({config.server_url})"
+    )
+    print(f"  local snapshot saved to {db_path}")
     return 0
 
 
@@ -526,6 +735,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 host=host,
                 interval=args.interval,
                 lookup=system_user_lookup,
+                name_lookup=system_process_name_lookup,
                 stop=stop,
             )
             total = conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0]

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0 - 2026-06-17
+
+- Added optional GUA Board cloud sync. `gua enroll` claims a one-time
+  enrollment token from a GUA Board workspace and stores a host-scoped,
+  write-only agent token in `~/.gua/cloud.json` (mode 0600). `gua sync-once`
+  collects one snapshot, writes it to the local history database first, then
+  pushes the latest state to GUA Board; a failed push never blocks or rolls
+  back the local write. Cloud sync is entirely optional — local collection,
+  storage, and `gua report` are unchanged when no host is enrolled, and no new
+  runtime dependency is added (the client uses the standard library).
+- Enriched NVML collection with per-GPU name, total/used memory, temperature,
+  power, and physical index, plus per-process name (from `/proc/<pid>/comm`;
+  full command lines are never collected). The local SQLite schema gained
+  these columns plus a normalized `gpu_device` table. The migration is
+  additive (nullable columns), so existing `~/.gua/gua.db` databases upgrade
+  in place and `gua report` output is unaffected.
+
 ## 1.0.3 - 2026-05-27
 
 - Changed default `gua` state paths to `~/.gua/gua.db`, `~/.gua/gua.pid`,

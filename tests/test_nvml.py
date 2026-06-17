@@ -60,6 +60,7 @@ def _make_mock_pynvml(
     """가짜 pynvml 모듈. NVMLTier 가 호출하는 함수들만 구현.
 
     gpus 항목은 {"uuid", "util", "procs": [{"pid", "mem"}]} 형태.
+    선택 키: "name", "mem_total", "mem_used", "temp", "power_mw" (없으면 기본값).
     mem=None 이면 usedGpuMemory 가 None — skip 검증용.
     """
 
@@ -73,6 +74,7 @@ def _make_mock_pynvml(
     nvml.NVML_ERROR_LIBRARY_NOT_FOUND = 12
     nvml.NVML_ERROR_DRIVER_NOT_LOADED = 9
     nvml.NVML_ERROR_LIB_RM_VERSION_MISMATCH = 19
+    nvml.NVML_TEMPERATURE_GPU = 0
     nvml.nvmlInit = MagicMock(return_value=None)
     nvml.nvmlShutdown = MagicMock(return_value=None)
     nvml.nvmlSystemGetDriverVersion = MagicMock(return_value=driver)
@@ -81,9 +83,19 @@ def _make_mock_pynvml(
     # GPU 핸들은 그저 index → dict 로 직접 매핑.
     nvml.nvmlDeviceGetHandleByIndex = MagicMock(side_effect=lambda i: gpus[i])
     nvml.nvmlDeviceGetUUID = MagicMock(side_effect=lambda h: h["uuid"])
+    nvml.nvmlDeviceGetName = MagicMock(side_effect=lambda h: h.get("name", "NVIDIA Test GPU"))
     nvml.nvmlDeviceGetUtilizationRates = MagicMock(
         side_effect=lambda h: SimpleNamespace(gpu=h["util"], memory=0)
     )
+    nvml.nvmlDeviceGetMemoryInfo = MagicMock(
+        side_effect=lambda h: SimpleNamespace(
+            total=h.get("mem_total", 48 * 1024 * 1024 * 1024),
+            used=h.get("mem_used", 0),
+            free=0,
+        )
+    )
+    nvml.nvmlDeviceGetTemperature = MagicMock(side_effect=lambda h, sensor: h.get("temp", 50))
+    nvml.nvmlDeviceGetPowerUsage = MagicMock(side_effect=lambda h: h.get("power_mw", 70000))
     nvml.nvmlDeviceGetComputeRunningProcesses = MagicMock(
         side_effect=lambda h: [
             SimpleNamespace(pid=p["pid"], usedGpuMemory=p["mem"]) for p in h["procs"]
@@ -142,6 +154,56 @@ def test_collect_converts_bytes_and_memory_units(monkeypatch: pytest.MonkeyPatch
         ("GPU-aaaa", 1234, 71680),
         ("GPU-bbbb", 5678, 8192),
     ]
+
+
+def test_collect_gathers_enriched_device_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _make_mock_pynvml(
+        driver="560.35.05",
+        gpus=[
+            {
+                "uuid": "GPU-aaaa",
+                "util": 80,
+                "name": b"NVIDIA RTX A6000",
+                "mem_total": 48 * 1024 * 1024 * 1024,
+                "mem_used": 18 * 1024 * 1024 * 1024,
+                "temp": 54,
+                "power_mw": 72000,
+                "procs": [{"pid": 1234, "mem": 18 * 1024 * 1024 * 1024}],
+            },
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+
+    with NVMLTier() as tier:
+        tier.probe()
+        snap = tier.collect(TS)
+
+    g = snap.gpus[0]
+    assert (g.uuid, g.index, g.name) == ("GPU-aaaa", 0, "NVIDIA RTX A6000")
+    assert (g.memory_total_mb, g.memory_used_mb) == (49152, 18432)
+    assert (g.temperature_c, g.power_w) == (54, 72)
+    # process 는 자기 카드의 index 를 들고 온다 (loginuid/name 은 caller 가 해석).
+    assert (snap.procs[0].gpu_index, snap.procs[0].process_name) == (0, None)
+
+
+def test_collect_tolerates_missing_temperature_and_power(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _make_mock_pynvml(
+        driver="x",
+        gpus=[{"uuid": "GPU-x", "util": 0, "procs": []}],
+    )
+
+    def _unsupported(*_args: Any) -> Any:
+        raise fake.NVMLError("not supported")
+
+    fake.nvmlDeviceGetTemperature = MagicMock(side_effect=_unsupported)
+    fake.nvmlDeviceGetPowerUsage = MagicMock(side_effect=_unsupported)
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+
+    with NVMLTier() as tier:
+        tier.probe()
+        snap = tier.collect(TS)
+    assert snap.gpus[0].temperature_c is None
+    assert snap.gpus[0].power_w is None
 
 
 def test_collect_before_probe_raises(monkeypatch: pytest.MonkeyPatch) -> None:

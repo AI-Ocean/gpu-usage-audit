@@ -95,7 +95,19 @@ class NVMLTier:
             h = nvml.nvmlDeviceGetHandleByIndex(i)
             uuid = _decode(nvml.nvmlDeviceGetUUID(h))
             util = nvml.nvmlDeviceGetUtilizationRates(h)
-            gpus.append(GPUSample(uuid=uuid, util_pct=int(util.gpu)))
+            mem = nvml.nvmlDeviceGetMemoryInfo(h)
+            gpus.append(
+                GPUSample(
+                    uuid=uuid,
+                    util_pct=int(util.gpu),
+                    index=i,
+                    name=_decode(nvml.nvmlDeviceGetName(h)),
+                    memory_total_mb=int(mem.total) // (1024 * 1024),
+                    memory_used_mb=int(mem.used) // (1024 * 1024),
+                    temperature_c=self._read_temperature(nvml, h),
+                    power_w=self._read_power_w(nvml, h),
+                )
+            )
 
             # 일부 GPU/드라이버는 권한이 부족하면 이 호출 자체가 NVMLError —
             # 해당 카드의 process list 만 비우고 진행.
@@ -124,9 +136,26 @@ class NVMLTier:
                         gpu_uuid=uuid,
                         pid=int(p.pid),
                         mem_used_mb=mem_mb,
+                        gpu_index=i,
                     )
                 )
         return Snapshot(gpus=gpus, procs=procs)
+
+    @staticmethod
+    def _read_temperature(nvml: Any, handle: Any) -> int | None:
+        """GPU 온도(°C). 일부 카드/드라이버는 미지원 — 실패 시 None (optional metric)."""
+        try:
+            return int(nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU))
+        except nvml.NVMLError:
+            return None
+
+    @staticmethod
+    def _read_power_w(nvml: Any, handle: Any) -> int | None:
+        """순간 전력(W). NVML 은 milliwatt 반환. 미지원 시 None (optional metric)."""
+        try:
+            return int(nvml.nvmlDeviceGetPowerUsage(handle)) // 1000
+        except nvml.NVMLError:
+            return None
 
     def close(self) -> None:
         if not self._initialized or self._nvml is None:

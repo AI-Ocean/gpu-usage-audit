@@ -71,7 +71,8 @@ class FakeTier:
             gpu0_util, gpu0_mem = 0, 0
 
         # 메모리 0 이면 그 프로세스는 카드 위에 없는 것 — NVML 도 그렇게 본다.
-        # loginuid_user 미리 박음: alice(학습), bob(Jupyter), None(unknown 시연용).
+        # loginuid_user/process_name 미리 박음: alice(학습), bob(Jupyter),
+        # None(unknown 시연용). cloud sync 가 /proc 을 건드리지 않게 fake 가 채운다.
         procs: list[ProcSample] = []
         if gpu0_mem > 0:
             procs.append(
@@ -80,6 +81,8 @@ class FakeTier:
                     pid=1234,
                     mem_used_mb=gpu0_mem,
                     loginuid_user="alice",
+                    gpu_index=0,
+                    process_name="python",
                 )
             )
         procs.extend(
@@ -89,6 +92,8 @@ class FakeTier:
                     pid=5678,
                     mem_used_mb=8000,
                     loginuid_user="bob",
+                    gpu_index=1,
+                    process_name="jupyter",
                 ),
                 # PID 9999 는 의도적으로 미해결 — §4 의 "unknown" 분류 시연.
                 ProcSample(
@@ -96,15 +101,31 @@ class FakeTier:
                     pid=9999,
                     mem_used_mb=200,
                     loginuid_user=None,
+                    gpu_index=1,
+                    process_name=None,
                 ),
             ]
         )
 
         return Snapshot(
             gpus=[
-                GPUSample(uuid="GPU-0", util_pct=gpu0_util),
-                GPUSample(uuid="GPU-1", util_pct=2),
-                GPUSample(uuid="GPU-2", util_pct=0),
+                _fake_gpu("GPU-0", index=0, util_pct=gpu0_util, used_mb=gpu0_mem),
+                _fake_gpu("GPU-1", index=1, util_pct=2, used_mb=8200),
+                _fake_gpu("GPU-2", index=2, util_pct=0, used_mb=0),
             ],
             procs=procs,
         )
+
+
+def _fake_gpu(uuid: str, *, index: int, util_pct: int, used_mb: int) -> GPUSample:
+    """결정적 fake GPU sample — RTX A6000 48GB 한 장을 흉내."""
+    return GPUSample(
+        uuid=uuid,
+        util_pct=util_pct,
+        index=index,
+        name="NVIDIA RTX A6000",
+        memory_total_mb=49140,
+        memory_used_mb=used_mb,
+        temperature_c=40 + util_pct // 2,
+        power_w=70 + util_pct,
+    )

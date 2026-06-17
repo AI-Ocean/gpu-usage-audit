@@ -121,6 +121,8 @@ Reports can run while the daemon is writing; SQLite WAL mode handles concurrent 
 | `gua stop` | Stop the managed background collector |
 | `gua report` | Render the retrospective report from SQLite |
 | `gua demo` | Generate a fake local report without a GPU |
+| `gua enroll` | Connect this host to a GUA Board workspace (optional cloud sync) |
+| `gua sync-once` | Collect one snapshot and push the latest state to GUA Board |
 | `gua version` | Print version |
 
 ## Important Options
@@ -167,6 +169,28 @@ Then run:
 ```sh
 systemctl enable --now gpu-usage-audit
 ```
+
+## Cloud Sync (GUA Board, optional)
+
+`gpu-usage-audit` runs fully local by default. If you also use GUA Board (a separate service that shows the latest GPU availability across several servers in one place), you can optionally connect a host:
+
+```sh
+# 1. In the GUA Board web UI, register a server and copy the one-time enrollment token.
+# 2. On the GPU host:
+gua enroll --server-url https://board.example.com --enrollment-token <TOKEN>
+# 3. Push the current snapshot (run on a timer or after `gua daemon`):
+gua sync-once
+```
+
+How it works and what it does not do:
+
+- `enroll` exchanges the one-time token for a host-scoped, write-only agent token, stored in `~/.gua/cloud.json` with mode `0600`. The token can only write this host's observations — it cannot read reservations, users, or other hosts.
+- `sync-once` collects one snapshot, **writes it to the local database first**, then pushes only the latest state. A failed push never blocks or rolls back the local write.
+- Only the latest snapshot is sent. Historical ticks are kept locally and are never replayed to the server.
+- Process telemetry is limited to PID, Linux user, process name (`/proc/<pid>/comm`), and GPU memory — never full command lines.
+- Cloud sync adds no new runtime dependency (the client uses the Python standard library).
+
+Override the config or database path with `--config PATH` / `--db PATH`, and use `gua sync-once --fake` to exercise the flow without a GPU.
 
 ## Classification Rules
 
