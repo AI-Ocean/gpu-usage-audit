@@ -22,13 +22,16 @@ from datetime import UTC, datetime, timedelta
 from typing import TextIO
 
 from .db import start_daemon_run, write_snapshot
-from .model import HostMeta, ProcSample
+from .model import HostMeta, ProcSample, Snapshot
 from .summarize import summarize
 from .tier import Tier
 
 logger = logging.getLogger(__name__)
 
 UserLookup = Callable[[int], str | None]
+# 틱 후크: local write *이후* 의 부가 작업(예: cloud push). 데몬 모듈은 cloud 를
+# 모르고, CLI 가 콜백을 주입한다 — 결합도 분리.
+OnTick = Callable[[Snapshot, datetime], None]
 
 
 def _noop_lookup(_pid: int) -> str | None:
@@ -78,8 +81,13 @@ def _tick(
     n: int,
     out: TextIO,
     run_id: int,
+    on_tick: OnTick | None = None,
 ) -> None:
-    """한 틱: tier.collect → loginuid/process_name 해석 → 적재 → 한 줄 로그."""
+    """한 틱: tier.collect → loginuid/process_name 해석 → 적재 → 한 줄 로그.
+
+    on_tick 이 있으면 local write *이후* 호출한다(예: cloud push). 후크 실패는
+    이미 커밋된 local write 와 다음 틱을 막지 않는다 — 로그만 남기고 계속.
+    """
     snap = tier.collect(ts)
     # ProcSample 이 mutable slots — *제자리* 갱신.
     resolve_proc_identities(snap.procs, lookup, name_lookup)
@@ -88,6 +96,12 @@ def _tick(
     classes = "  ".join(f"{c.uuid}={c.klass.value:<10}" for c in summarize(snap))
     ts_short = ts.strftime("%H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
     print(f"Tick {n}  ts={ts_short}  {classes}", file=out)
+
+    if on_tick is not None:
+        try:
+            on_tick(snap, ts)
+        except Exception:
+            logger.exception("tick %d on_tick hook failed; continuing", n)
 
 
 def run_daemon(
@@ -101,6 +115,7 @@ def run_daemon(
     stop: threading.Event | None = None,
     max_ticks: int | None = None,
     out: TextIO | None = None,
+    on_tick: OnTick | None = None,
 ) -> int:
     """ctx 캔슬까지 interval 간격으로 한 틱씩 반복. 적재한 틱 총 수 반환.
 
@@ -135,7 +150,7 @@ def run_daemon(
             run_id = start_daemon_run(db, datetime.now(UTC), interval)
 
         try:
-            _tick(tier, db, host, lookup, name_lookup, datetime.now(UTC), n, out, run_id)
+            _tick(tier, db, host, lookup, name_lookup, datetime.now(UTC), n, out, run_id, on_tick)
         except Exception:
             logger.exception("tick %d failed; continuing", n)
         n += 1

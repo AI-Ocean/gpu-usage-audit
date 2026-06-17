@@ -273,3 +273,66 @@ def test_sync_once_without_enrollment_exits_2(
     )
     assert rc == 2
     assert "run `gua enroll`" in capsys.readouterr().err
+
+
+# ── daemon --cloud ───────────────────────────────────────────────
+
+
+def test_daemon_cloud_without_enrollment_exits_2(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --cloud 인데 enroll 안 됨 → NVML 열기 *전에* 설정 검증 실패로 종료.
+    rc = gua_main(
+        [
+            "daemon",
+            "--foreground",
+            "--cloud",
+            "--db",
+            str(tmp_path / "gua.db"),
+            "--config",
+            str(tmp_path / "absent.json"),
+        ]
+    )
+    assert rc == 2
+    assert "run `gua enroll`" in capsys.readouterr().err
+
+
+def test_daemon_start_propagates_cloud_flags_to_background(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # 백그라운드 spawn 커맨드에 --cloud/--config 가 실려야 데몬이 push 한다.
+    captured: dict[str, Any] = {}
+
+    class FakePopen:
+        def __init__(self, command: list[str], **_kwargs: Any) -> None:
+            captured["command"] = command
+            self.pid = 4242
+
+        def poll(self) -> int | None:
+            return None
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("gpu_usage_audit.__main__.time.sleep", lambda *_a, **_k: None)
+
+    config_path = tmp_path / "cloud.json"
+    rc = gua_main(
+        [
+            "daemon",
+            "--cloud",
+            "--db",
+            str(tmp_path / "gua.db"),
+            "--config",
+            str(config_path),
+            "--pid-file",
+            str(tmp_path / "daemon.pid"),
+            "--log-file",
+            str(tmp_path / "daemon.log"),
+        ]
+    )
+    assert rc == 0
+    command = captured["command"]
+    assert "--cloud" in command
+    assert "--config" in command
+    assert str(config_path) in command

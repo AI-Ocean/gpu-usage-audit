@@ -43,7 +43,7 @@ from .daemon import install_signal_handlers, resolve_proc_identities, run_daemon
 from .db import open_db, write_snapshot
 from .doctor import build_doctor_report, doctor_report_to_dict, render_doctor
 from .identity import system_process_name_lookup, system_user_lookup
-from .model import HostMeta
+from .model import HostMeta, Snapshot
 from .nvml import NVMLNotAvailableError, NVMLTier
 from .paths import (
     DEFAULT_CLOUD_CONFIG_PATH,
@@ -121,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=timedelta(seconds=30),
         help="Tick interval (e.g. 30s, 1m, 200ms) [default: 30s]",
     )
+    _add_cloud_args(p_daemon)
     p_daemon.set_defaults(func=_cmd_daemon)
 
     p_report = sub.add_parser(
@@ -195,6 +196,19 @@ def _add_daemon_args(parser: argparse.ArgumentParser) -> None:
         type=_duration,
         default=timedelta(seconds=30),
         help="Tick interval (e.g. 30s, 1m, 200ms) [default: 30s]",
+    )
+
+
+def _add_cloud_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cloud",
+        action="store_true",
+        help="After each tick, push the latest snapshot to GUA Board (requires `gua enroll`)",
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CLOUD_CONFIG_PATH),
+        help=f"Cloud config path (used with --cloud) [default: {DEFAULT_CLOUD_CONFIG_PATH}]",
     )
 
 
@@ -294,6 +308,7 @@ def build_gua_parser() -> argparse.ArgumentParser:
     )
     _add_daemon_args(p_daemon)
     _add_runtime_file_args(p_daemon)
+    _add_cloud_args(p_daemon)
     p_daemon.add_argument(
         "--foreground",
         action="store_true",
@@ -307,6 +322,7 @@ def build_gua_parser() -> argparse.ArgumentParser:
     )
     _add_daemon_args(p_start)
     _add_runtime_file_args(p_start)
+    _add_cloud_args(p_start)
     p_start.set_defaults(func=_cmd_gua_start)
 
     p_status = sub.add_parser(
@@ -598,6 +614,9 @@ def _cmd_gua_start(args: argparse.Namespace) -> int:
         "--interval",
         _duration_cli_value(args.interval),
     ]
+    # cloud sync 옵션을 백그라운드 프로세스로 전파한다.
+    if getattr(args, "cloud", False):
+        command += ["--cloud", "--config", str(args.config)]
     env = os.environ.copy()
     env[DISPLAY_COMMAND_ENV] = "gua daemon --foreground"
     with log_path.open("ab") as log:
@@ -712,6 +731,16 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         return 2
     if is_default_db_path(db_path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # cloud sync 가 켜졌으면 enroll 설정을 *먼저* 검증한다(미enroll 이면 NVML 열기 전에 중단).
+    cloud_config = None
+    if getattr(args, "cloud", False):
+        try:
+            cloud_config = load_cloud_config(args.config)
+        except CloudConfigError as exc:
+            print(f"{display_command}: {exc}", file=sys.stderr)
+            return 2
+
     tier = NVMLTier()
     try:
         try:
@@ -721,12 +750,37 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return 1
         conn = open_db(db_path)
         try:
+            hostname = socket.gethostname() or "unknown"
             host = HostMeta(
-                hostname=socket.gethostname() or "unknown",
+                hostname=hostname,
                 env_kind=LOCAL_ENV_KIND,
                 driver_version=driver,
                 first_seen=datetime.now(UTC),
             )
+
+            # cloud on_tick 후크: local write 이후 latest snapshot 을 board 로 push.
+            # 빌드/푸시 실패는 daemon._tick 이 잡아 로그만 남기고 다음 틱을 계속한다.
+            on_tick = None
+            if cloud_config is not None:
+
+                def push_snapshot(snap: Snapshot, ts: datetime) -> None:
+                    payload = build_observation_payload(
+                        snapshot=snap,
+                        hostname=hostname,
+                        driver_version=driver,
+                        agent_version=__version__,
+                        observed_at=ts,
+                        host_id=cloud_config.host_id,
+                        display_name=cloud_config.display_name,
+                    )
+                    post_observation(cloud_config, payload)
+
+                on_tick = push_snapshot
+                print(
+                    f"{display_command}: cloud sync enabled -> "
+                    f"{cloud_config.display_name} ({cloud_config.server_url})"
+                )
+
             stop = threading.Event()
             install_signal_handlers(stop)
             run_daemon(
@@ -737,6 +791,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 lookup=system_user_lookup,
                 name_lookup=system_process_name_lookup,
                 stop=stop,
+                on_tick=on_tick,
             )
             total = conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0]
             print(f"\n{args.db}: {total} total gpu_sample rows")
