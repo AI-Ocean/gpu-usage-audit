@@ -16,7 +16,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .model import HostMeta, Snapshot
+from .model import GPUSample, HostMeta, Snapshot
 
 # (gpu_uuid, ts) 컬럼 순서: report 쿼리가 *카드 단위* 로 시간 범위를
 # 자르는 패턴이라 uuid 가 leading column.
@@ -51,8 +51,19 @@ CREATE TABLE IF NOT EXISTS proc_sample (
     run_id        INTEGER REFERENCES daemon_run(id)
 );
 
+-- gpu_device: device 정체성을 시변 metric 에서 분리해 정규화 (v1.1).
+-- 한 GPU(UUID)당 한 행, 매 틱 upsert. local DB 는 단일 host 라 host_id 불필요.
+CREATE TABLE IF NOT EXISTS gpu_device (
+    gpu_uuid        TEXT     NOT NULL,
+    name            TEXT     NOT NULL,
+    memory_total_mb INTEGER  NOT NULL,
+    first_seen      DATETIME NOT NULL,
+    last_seen       DATETIME NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_gpu_sample_uuid_ts  ON gpu_sample(gpu_uuid, ts);
 CREATE INDEX IF NOT EXISTS idx_proc_sample_uuid_ts ON proc_sample(gpu_uuid, ts);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gpu_device_uuid ON gpu_device(gpu_uuid);
 """
 
 
@@ -87,9 +98,21 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Apply additive migrations for DBs created before interval metadata."""
+    """Apply additive migrations for DBs created before later columns existed.
+
+    All migrations are additive nullable columns, so legacy rows keep their
+    values and `gua report` (which reads only the original columns) is
+    unaffected. `gpu_device` is created by SCHEMA's CREATE TABLE IF NOT EXISTS.
+    """
     _ensure_column(conn, "gpu_sample", "run_id", "INTEGER")
     _ensure_column(conn, "proc_sample", "run_id", "INTEGER")
+    # v1.1 cloud-sync enrichment.
+    _ensure_column(conn, "gpu_sample", "gpu_index", "INTEGER")
+    _ensure_column(conn, "gpu_sample", "memory_used_mb", "INTEGER")
+    _ensure_column(conn, "gpu_sample", "temperature_c", "INTEGER")
+    _ensure_column(conn, "gpu_sample", "power_w", "INTEGER")
+    _ensure_column(conn, "proc_sample", "gpu_index", "INTEGER")
+    _ensure_column(conn, "proc_sample", "process_name", "TEXT")
 
 
 def _ensure_column(
@@ -147,6 +170,24 @@ def upsert_host(conn: sqlite3.Connection, host: HostMeta, last_seen: datetime) -
     )
 
 
+def upsert_gpu_device(conn: sqlite3.Connection, sample: GPUSample, seen: datetime) -> None:
+    """GPU device 정체성(name/memory_total)을 한 행으로 유지. first_seen 보존.
+
+    name/memory_total 이 없는 (enrich 안 된) sample 은 건너뛴다 — local-only
+    daemon 이 NVML 확장 전 데이터를 보내거나 fake 가 식별을 안 채운 경우.
+    """
+    if sample.name is None or sample.memory_total_mb is None:
+        return
+    seen_str = _ts(seen)
+    conn.execute(
+        "INSERT INTO gpu_device(gpu_uuid, name, memory_total_mb, first_seen, last_seen) "
+        "VALUES(?,?,?,?,?) "
+        "ON CONFLICT(gpu_uuid) DO UPDATE SET "
+        "name=excluded.name, memory_total_mb=excluded.memory_total_mb, last_seen=excluded.last_seen",
+        (sample.uuid, sample.name, sample.memory_total_mb, seen_str, seen_str),
+    )
+
+
 def write_snapshot(
     conn: sqlite3.Connection,
     ts: datetime,
@@ -163,21 +204,50 @@ def write_snapshot(
 
     `with conn:` 컨텍스트가 자동 commit (예외 시 rollback). sqlite3
     모듈의 표준 트랜잭션 패턴.
+
+    v1.1: device 정체성은 gpu_device 로 upsert, 시변 metric(util/memory_used/
+    temperature/power/index)은 gpu_sample, process_name/gpu_index 는 proc_sample.
     """
     ts_str = _ts(ts)
     with conn:
         upsert_host(conn, host, ts)
+        for g in snap.gpus:
+            upsert_gpu_device(conn, g, ts)
         if snap.gpus:
             conn.executemany(
-                "INSERT INTO gpu_sample(ts, gpu_uuid, util_pct, run_id) VALUES(?,?,?,?)",
-                [(ts_str, g.uuid, g.util_pct, run_id) for g in snap.gpus],
+                "INSERT INTO gpu_sample"
+                "(ts, gpu_uuid, util_pct, gpu_index, memory_used_mb, temperature_c, power_w, run_id) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        ts_str,
+                        g.uuid,
+                        g.util_pct,
+                        g.index,
+                        g.memory_used_mb,
+                        g.temperature_c,
+                        g.power_w,
+                        run_id,
+                    )
+                    for g in snap.gpus
+                ],
             )
         if snap.procs:
             conn.executemany(
-                "INSERT INTO proc_sample(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, run_id) "
-                "VALUES(?,?,?,?,?,?)",
+                "INSERT INTO proc_sample"
+                "(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, gpu_index, process_name, run_id) "
+                "VALUES(?,?,?,?,?,?,?,?)",
                 [
-                    (ts_str, p.gpu_uuid, p.pid, p.mem_used_mb, p.loginuid_user, run_id)
+                    (
+                        ts_str,
+                        p.gpu_uuid,
+                        p.pid,
+                        p.mem_used_mb,
+                        p.loginuid_user,
+                        p.gpu_index,
+                        p.process_name,
+                        run_id,
+                    )
                     for p in snap.procs
                 ],
             )

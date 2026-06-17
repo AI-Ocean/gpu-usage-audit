@@ -53,3 +53,22 @@ def system_user_lookup(pid: int, proc_root: str | Path = "/proc") -> str | None:
         return pwd.getpwuid(uid).pw_name
     except KeyError:
         return None
+
+
+def system_process_name_lookup(pid: int, proc_root: str | Path = "/proc") -> str | None:
+    """PID 의 프로세스 이름을 `/proc/<pid>/comm` 에서 읽는다. 실패는 None.
+
+    `comm` 은 커널이 들고 있는 thread/process 이름(보통 executable basename,
+    최대 15자). full command line 은 dataset path/token 등 민감정보를 담을
+    수 있어 *의도적으로* 수집하지 않는다 — cloud snapshot 의 process name 은
+    comm 으로 충분하다.
+
+    None 분기: /proc/<pid>/comm 없음(PID 사라짐), 읽기 실패, 빈 내용.
+    """
+    path = Path(proc_root) / str(pid) / "comm"
+    try:
+        data = path.read_text()
+    except OSError:
+        return None
+    name = data.strip()
+    return name or None

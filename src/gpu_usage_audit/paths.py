@@ -8,6 +8,8 @@ DEFAULT_STATE_DIR = Path.home() / ".gua"
 DEFAULT_DB_PATH = DEFAULT_STATE_DIR / "gua.db"
 DEFAULT_PID_PATH = DEFAULT_STATE_DIR / "gua.pid"
 DEFAULT_LOG_PATH = DEFAULT_STATE_DIR / "gua.log"
+# GUA Board cloud sync 자격증명/링크. agent token 을 담으므로 0600 으로 저장.
+DEFAULT_CLOUD_CONFIG_PATH = DEFAULT_STATE_DIR / "cloud.json"
 
 
 def expand_path(path: str | Path) -> Path:

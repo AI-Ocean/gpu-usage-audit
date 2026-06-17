@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TextIO
 
 from .db import start_daemon_run, write_snapshot
-from .model import HostMeta
+from .model import HostMeta, ProcSample
 from .summarize import summarize
 from .tier import Tier
 
@@ -51,22 +51,38 @@ def install_signal_handlers(stop: threading.Event) -> None:
     signal.signal(signal.SIGTERM, handler)
 
 
+def resolve_proc_identities(
+    procs: list[ProcSample],
+    user_lookup: UserLookup,
+    name_lookup: UserLookup,
+) -> None:
+    """미해결(None) loginuid_user / process_name 을 제자리에서 채운다.
+
+    이미 채워진 항목(FakeTier 가 미리 박은 값)은 건드리지 않는다. daemon
+    틱과 cloud sync-once 가 같은 해석 규칙을 공유하도록 한곳에 모음.
+    """
+    for p in procs:
+        if p.loginuid_user is None:
+            p.loginuid_user = user_lookup(p.pid)
+        if p.process_name is None:
+            p.process_name = name_lookup(p.pid)
+
+
 def _tick(
     tier: Tier,
     db: sqlite3.Connection,
     host: HostMeta,
     lookup: UserLookup,
+    name_lookup: UserLookup,
     ts: datetime,
     n: int,
     out: TextIO,
     run_id: int,
 ) -> None:
-    """한 틱: tier.collect → loginuid 해석 → 적재 → 한 줄 로그."""
+    """한 틱: tier.collect → loginuid/process_name 해석 → 적재 → 한 줄 로그."""
     snap = tier.collect(ts)
     # ProcSample 이 mutable slots — *제자리* 갱신.
-    for p in snap.procs:
-        if p.loginuid_user is None:
-            p.loginuid_user = lookup(p.pid)
+    resolve_proc_identities(snap.procs, lookup, name_lookup)
     write_snapshot(db, ts, host, snap, run_id=run_id)
 
     classes = "  ".join(f"{c.uuid}={c.klass.value:<10}" for c in summarize(snap))
@@ -81,6 +97,7 @@ def run_daemon(
     host: HostMeta,
     interval: timedelta,
     lookup: UserLookup = _noop_lookup,
+    name_lookup: UserLookup = _noop_lookup,
     stop: threading.Event | None = None,
     max_ticks: int | None = None,
     out: TextIO | None = None,
@@ -118,7 +135,7 @@ def run_daemon(
             run_id = start_daemon_run(db, datetime.now(UTC), interval)
 
         try:
-            _tick(tier, db, host, lookup, datetime.now(UTC), n, out, run_id)
+            _tick(tier, db, host, lookup, name_lookup, datetime.now(UTC), n, out, run_id)
         except Exception:
             logger.exception("tick %d failed; continuing", n)
         n += 1

@@ -16,10 +16,24 @@ from .classify import Class
 
 @dataclass(slots=True)
 class GPUSample:
-    """한 카드의 한 틱 — UUID + SM 사용률(%)."""
+    """한 카드의 한 틱 — UUID + SM 사용률(%).
+
+    v1.1 cloud sync 를 위한 device identity/metric 필드는 *optional* 로 확장.
+    local report 경로는 uuid/util_pct 만 읽으므로 None 이어도 무손상이고,
+    NVMLTier/FakeTier 가 채우면 cloud snapshot payload 까지 만들 수 있다.
+
+    name/memory_total_mb 는 *device 정체성* — 저장 시 gpu_device 로 정규화.
+    index/memory_used_mb/temperature_c/power_w 는 *시변 metric* — gpu_sample 행.
+    """
 
     uuid: str
     util_pct: int
+    index: int | None = None
+    name: str | None = None
+    memory_total_mb: int | None = None
+    memory_used_mb: int | None = None
+    temperature_c: int | None = None
+    power_w: int | None = None
 
 
 @dataclass(slots=True)
@@ -35,6 +49,8 @@ class ProcSample:
     pid: int
     mem_used_mb: int
     loginuid_user: str | None = None
+    gpu_index: int | None = None
+    process_name: str | None = None
 
 
 @dataclass(slots=True)
