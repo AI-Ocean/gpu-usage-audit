@@ -172,7 +172,7 @@ systemctl enable --now gpu-usage-audit
 
 ## Cloud Sync (GUA Board, 선택)
 
-`gpu-usage-audit`은 기본적으로 완전히 로컬로 동작합니다. 여러 서버의 최신 GPU 가용 상태를 한 화면에서 보는 [GUA Board](https://github.com/AI-Ocean/gpu-usage-audit)를 함께 쓴다면, 호스트를 선택적으로 연결할 수 있습니다.
+`gpu-usage-audit`은 기본적으로 완전히 로컬로 동작합니다. 여러 서버의 최신 GPU 가용 상태를 한 화면에서 보는 별도 서비스인 GUA Board를 함께 쓴다면, 호스트를 선택적으로 연결할 수 있습니다.
 
 ```sh
 # 1. GUA Board 웹에서 서버를 등록하고 one-time enrollment token을 복사합니다.

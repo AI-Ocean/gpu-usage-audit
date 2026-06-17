@@ -447,9 +447,20 @@ def _cmd_gua_enroll(args: argparse.Namespace) -> int:
             agent_version=args.agent_version,
             driver_version=driver_version,
         )
-        saved = save_cloud_config(config, config_path, overwrite=args.force)
     except (CloudError, CloudConfigError) as exc:
         print(f"gua enroll: {exc}", file=sys.stderr)
+        return 1
+
+    # claim 은 성공했지만 저장에 실패하면 one-time enrollment token 은 이미 소비됨 —
+    # 새 token 이 필요함을 분명히 알린다 (재시도 시 혼란 방지).
+    try:
+        saved = save_cloud_config(config, config_path, overwrite=args.force)
+    except CloudConfigError as exc:
+        print(
+            f"gua enroll: enrollment succeeded but saving config failed: {exc}. "
+            "The one-time enrollment token is now used; request a new one to retry.",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"gua enroll: connected host {config.display_name} ({config.host_id})")
@@ -507,15 +518,23 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
     finally:
         conn.close()
 
-    payload = build_observation_payload(
-        snapshot=snap,
-        hostname=hostname,
-        driver_version=driver,
-        agent_version=__version__,
-        observed_at=observed_at,
-        host_id=config.host_id,
-        display_name=config.display_name,
-    )
+    try:
+        payload = build_observation_payload(
+            snapshot=snap,
+            hostname=hostname,
+            driver_version=driver,
+            agent_version=__version__,
+            observed_at=observed_at,
+            host_id=config.host_id,
+            display_name=config.display_name,
+        )
+    except ValueError as exc:
+        print(
+            f"gua sync-once: local snapshot saved to {db_path}, "
+            f"but could not build a valid payload: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         post_observation(config, payload)

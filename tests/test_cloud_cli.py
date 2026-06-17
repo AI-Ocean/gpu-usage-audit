@@ -11,6 +11,7 @@ import pytest
 from gpu_usage_audit.__main__ import gua_main
 from gpu_usage_audit.cloud.client import CloudError
 from gpu_usage_audit.cloud.config import CloudConfig, load_cloud_config, save_cloud_config
+from gpu_usage_audit.model import GPUSample, Snapshot
 
 
 def _config() -> CloudConfig:
@@ -193,6 +194,49 @@ def test_sync_once_push_failure_keeps_local_write(
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0] == 3
+    finally:
+        conn.close()
+
+
+def test_sync_once_unbuildable_payload_keeps_local_write_without_pushing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "cloud.json"
+    save_cloud_config(_config(), config_path)
+    db_path = tmp_path / "gua.db"
+
+    class _BadTier:
+        # name/memory_total 없는 GPU → payload builder 가 ValueError.
+        def probe(self) -> str:
+            return "560.x-fake"
+
+        def collect(self, _ts: object) -> Snapshot:
+            return Snapshot(gpus=[GPUSample(uuid="GPU-0", util_pct=0)])
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.FakeTier", _BadTier)
+
+    posted = False
+
+    def fake_post(*_args: Any, **_kw: Any) -> dict[str, Any]:
+        nonlocal posted
+        posted = True
+        return {}
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.post_observation", fake_post)
+
+    rc = gua_main(["sync-once", "--fake", "--config", str(config_path), "--db", str(db_path)])
+
+    assert rc == 1
+    assert posted is False  # 빌드 실패 시 push 시도 안 함.
+    err = capsys.readouterr().err
+    assert "local snapshot saved" in err
+    assert "could not build a valid payload" in err
+    # local write 는 빌드 실패와 무관하게 보존된다.
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0] == 1
     finally:
         conn.close()
 

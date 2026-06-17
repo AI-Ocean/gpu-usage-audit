@@ -172,7 +172,7 @@ systemctl enable --now gpu-usage-audit
 
 ## Cloud Sync (GUA Board, optional)
 
-`gpu-usage-audit` runs fully local by default. If you also use [GUA Board](https://github.com/AI-Ocean/gpu-usage-audit) to see the latest GPU availability across several servers in one place, you can optionally connect a host:
+`gpu-usage-audit` runs fully local by default. If you also use GUA Board (a separate service that shows the latest GPU availability across several servers in one place), you can optionally connect a host:
 
 ```sh
 # 1. In the GUA Board web UI, register a server and copy the one-time enrollment token.
