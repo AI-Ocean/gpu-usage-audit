@@ -13,7 +13,7 @@ import pytest
 
 from gpu_usage_audit.daemon import run_daemon
 from gpu_usage_audit.db import open_db
-from gpu_usage_audit.model import HostMeta
+from gpu_usage_audit.model import HostMeta, Snapshot
 from gpu_usage_audit.tier import FakeTier
 
 INTERVAL = timedelta(milliseconds=20)
@@ -118,7 +118,7 @@ def test_run_daemon_invokes_on_tick_after_local_write(
     # on_tick 은 매 틱 local write *이후* 호출된다(cloud push 가 얹히는 자리).
     calls: list[int] = []
 
-    def on_tick(snap, _ts) -> None:
+    def on_tick(snap: Snapshot, _ts: datetime) -> None:
         # 콜백 시점엔 이미 이번 틱이 DB 에 기록돼 있어야 한다.
         calls.append(db.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0])
         assert len(snap.gpus) == 3  # FakeTier 의 스냅샷이 그대로 전달된다.
@@ -141,7 +141,7 @@ def test_run_daemon_continues_when_on_tick_raises(db: sqlite3.Connection, host: 
     # on_tick(예: cloud push) 실패는 local write 와 다음 틱을 막지 않는다.
     attempts: list[int] = []
 
-    def boom(_snap, _ts) -> None:
+    def boom(_snap: Snapshot, _ts: datetime) -> None:
         attempts.append(1)
         raise RuntimeError("cloud push failed")
 

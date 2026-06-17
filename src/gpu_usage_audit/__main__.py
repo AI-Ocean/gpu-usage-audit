@@ -322,6 +322,7 @@ def build_gua_parser() -> argparse.ArgumentParser:
     )
     _add_daemon_args(p_start)
     _add_runtime_file_args(p_start)
+    _add_cloud_args(p_start)
     p_start.set_defaults(func=_cmd_gua_start)
 
     p_status = sub.add_parser(
