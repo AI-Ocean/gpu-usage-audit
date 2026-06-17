@@ -509,9 +509,10 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
     )
 
     # local write 먼저 — cloud push 와 무관하게 history 를 보존한다.
+    # one-shot sync 는 append-only 라 daemon 의 clobber 가드가 필요 없고, 부모
+    # 디렉토리를 만들어 두어 user-supplied --db 경로도 바로 동작하게 한다.
     db_path = expand_path(args.db)
-    if is_default_db_path(db_path):
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(db_path)
     try:
         write_snapshot(conn, observed_at, host, snap)

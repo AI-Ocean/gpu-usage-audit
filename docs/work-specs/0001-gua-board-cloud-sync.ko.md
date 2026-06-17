@@ -129,13 +129,17 @@ sync-once:
 데이터 흐름 (불변식):
 
 ```
-collect (enriched)  →  write local DB (gpu_device upsert + gpu_sample/proc_sample append)  →  read latest  →  build payload  →  push
-        daemon·sync 공통                                                                              sync-once만
+collect (enriched)  →  write local DB (gpu_device upsert + gpu_sample/proc_sample append)  →  build payload  →  push
+        daemon·sync 공통                                                                          sync-once만
 ```
 
-`sync-once`는 자체적으로 한 틱을 enriched 수집·기록한 뒤, 그 latest를 DB에서 읽어 payload를 만들어 push한다.
-payload build는 최신 `gpu_sample`(metric)을 `gpu_device`(name/memory_total)와 UUID로 join한다.
-push 실패가 local write를 막지 않도록 write를 먼저 commit한다. SaaS에는 latest만 보내며 과거 tick을 replay하지 않는다.
+`sync-once`는 한 틱을 enriched 수집해 먼저 local DB에 atomic 하게 기록(commit)한 뒤, **그 동일한
+in-memory 스냅샷**에서 payload를 만들어 push한다. write 가 commit 된 뒤 build/push 하므로 in-memory
+스냅샷은 방금 기록된 latest 와 동일하다 — 별도 DB read-back/join 은 하지 않는다(중복 쿼리 회피).
+gpu_device 로의 정규화는 *저장* 경계의 결정이고, payload 의 name/memory_total 은 in-memory GPUSample
+필드에서 직접 온다. push(또는 payload build) 실패는 이미 commit 된 local write 를 막거나 되돌리지
+않는다. SaaS 에는 latest 만 보내며 과거 tick 을 replay 하지 않는다. NVML probe 실패 시에는 수집 자체가
+불가하므로 local write 도 push 도 없이 명확한 에러로 종료한다.
 
 v2 schema (additive — 기존 컬럼/인덱스 유지). 선택 B: device 정체성은 `gpu_device`로 정규화, `gpu_slot`은 보류:
 

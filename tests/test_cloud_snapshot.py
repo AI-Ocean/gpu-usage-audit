@@ -107,6 +107,27 @@ def test_clamps_and_fills_unknown_identities() -> None:
     ]
 
 
+def test_negative_temperature_and_power_are_clamped_to_nonneg() -> None:
+    # 일부 드라이버/SKU는 음수 sentinel을 반환 — 서버 ge=0 검증에 막히지 않게 0으로.
+    snap = Snapshot(
+        gpus=[
+            GPUSample(
+                uuid="GPU-0",
+                util_pct=10,
+                index=0,
+                name="GPU",
+                memory_total_mb=1000,
+                memory_used_mb=10,
+                temperature_c=-1,
+                power_w=-5,
+            )
+        ]
+    )
+    gpu = _build(snap)["gpus"][0]
+    assert gpu["temperatureC"] == 0
+    assert gpu["powerW"] == 0
+
+
 def test_missing_memory_total_is_rejected() -> None:
     snap = Snapshot(gpus=[GPUSample(uuid="GPU-0", util_pct=0)])
     with pytest.raises(ValueError, match="memoryTotalMb"):

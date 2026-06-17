@@ -241,6 +241,22 @@ def test_sync_once_unbuildable_payload_keeps_local_write_without_pushing(
         conn.close()
 
 
+def test_sync_once_creates_missing_db_parent_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "cloud.json"
+    save_cloud_config(_config(), config_path)
+    db_path = tmp_path / "nested" / "dir" / "gua.db"  # 부모 디렉토리 없음.
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.post_observation", lambda *a, **k: {})
+
+    rc = gua_main(["sync-once", "--fake", "--config", str(config_path), "--db", str(db_path)])
+
+    assert rc == 0
+    assert db_path.exists()
+
+
 def test_sync_once_without_enrollment_exits_2(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

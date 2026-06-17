@@ -69,8 +69,11 @@ def build_observation_payload(
                 "memoryTotalMb": total,
                 "utilPct": _clamp(g.util_pct, 0, 100),
                 "memoryUsedMb": used,
-                "temperatureC": g.temperature_c,
-                "powerW": g.power_w,
+                # 서버 contract 는 temperatureC/powerW 를 ge=0 으로 검증 — util/memory 와
+                # 같이 방어적으로 음수 sentinel 을 0 으로 눌러 한 GPU의 이상치가 전체
+                # snapshot 을 422 로 떨어뜨리지 않게 한다.
+                "temperatureC": _nonneg_or_none(g.temperature_c),
+                "powerW": _nonneg_or_none(g.power_w),
                 "processes": _build_processes(procs_by_uuid.get(g.uuid, [])),
             }
         )
@@ -103,3 +106,7 @@ def _build_processes(procs: list[ProcSample]) -> list[dict[str, Any]]:
 
 def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def _nonneg_or_none(value: int | None) -> int | None:
+    return max(0, value) if value is not None else None
