@@ -258,7 +258,9 @@ def test_sync_once_emits_partial_when_process_list_unavailable(
 
         def collect(self, _ts: object) -> Snapshot:
             return Snapshot(
-                gpus=[GPUSample(uuid="GPU-0", util_pct=10, index=0, name="GPU", memory_total_mb=1000)]
+                gpus=[
+                    GPUSample(uuid="GPU-0", util_pct=10, index=0, name="GPU", memory_total_mb=1000)
+                ]
             )
 
         @property
