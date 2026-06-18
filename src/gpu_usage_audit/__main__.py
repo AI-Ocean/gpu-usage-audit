@@ -34,11 +34,16 @@ from pathlib import Path
 from . import __version__
 from .cloud.client import CloudError, claim_enrollment, post_observation
 from .cloud.config import (
+    CloudConfig,
     CloudConfigError,
     load_cloud_config,
     save_cloud_config,
 )
-from .cloud.snapshot import build_observation_payload
+from .cloud.snapshot import (
+    ERROR_NVML_INIT_FAILED,
+    build_observation_payload,
+    derive_collection_status,
+)
 from .daemon import install_signal_handlers, resolve_proc_identities, run_daemon
 from .db import open_db, write_snapshot
 from .doctor import build_doctor_report, doctor_report_to_dict, render_doctor
@@ -499,6 +504,8 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
         return 2
 
     observed_at = datetime.now(UTC)
+    hostname = socket.gethostname() or "unknown"
+    process_list_unavailable = False
     if args.fake:
         tier = FakeTier()
         driver = tier.probe()
@@ -509,14 +516,19 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
             try:
                 driver = nvml_tier.probe()
             except NVMLNotAvailableError as exc:
-                print(f"gua sync-once: {exc}", file=sys.stderr)
-                return 1
+                # 드라이버를 잃은 host 도 board 가 non-ok freshness 로 보여줄 수
+                # 있게 error heartbeat 를 push 한다 (GPU inventory 없음, local
+                # write 도 없음 — 기록할 데이터가 없다).
+                return _push_error_heartbeat(config, hostname, observed_at, exc)
             snap = nvml_tier.collect(observed_at)
+            process_list_unavailable = nvml_tier.last_process_list_unavailable
             resolve_proc_identities(snap.procs, system_user_lookup, system_process_name_lookup)
         finally:
             nvml_tier.close()
 
-    hostname = socket.gethostname() or "unknown"
+    collection_status, errors = derive_collection_status(
+        snap, process_list_unavailable=process_list_unavailable
+    )
     host = HostMeta(
         hostname=hostname,
         env_kind=LOCAL_ENV_KIND,
@@ -544,6 +556,8 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
             observed_at=observed_at,
             host_id=config.host_id,
             display_name=config.display_name,
+            collection_status=collection_status,
+            errors=errors,
         )
     except ValueError as exc:
         print(
@@ -562,12 +576,51 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
         )
         return 1
 
+    status_note = "" if collection_status == "ok" else f" [{collection_status}: {','.join(errors)}]"
     print(
         f"gua sync-once: pushed {len(payload['gpus'])} GPUs to "
-        f"{config.display_name} ({config.server_url})"
+        f"{config.display_name} ({config.server_url}){status_note}"
     )
     print(f"  local snapshot saved to {db_path}")
     return 0
+
+
+def _push_error_heartbeat(
+    config: CloudConfig,
+    hostname: str,
+    observed_at: datetime,
+    exc: NVMLNotAvailableError,
+) -> int:
+    """NVML init 실패 시 board 에 `error` heartbeat 만 push 한다 (데이터 없음).
+
+    GPU inventory 가 비어 있어 local DB 에 쓸 게 없으므로 push 만 한다. push
+    실패는 비치명적 — 에러를 보고하고 non-zero exit 로 신호한다.
+    """
+    payload = build_observation_payload(
+        snapshot=Snapshot(),
+        hostname=hostname,
+        driver_version="unknown",
+        agent_version=__version__,
+        observed_at=observed_at,
+        host_id=config.host_id,
+        display_name=config.display_name,
+        collection_status="error",
+        errors=[ERROR_NVML_INIT_FAILED],
+    )
+    try:
+        post_observation(config, payload)
+    except CloudError as push_exc:
+        print(
+            f"gua sync-once: {exc}; error heartbeat push also failed: {push_exc}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"gua sync-once: {exc}; pushed error heartbeat to "
+        f"{config.display_name} ({config.server_url})",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _cmd_gua_daemon(args: argparse.Namespace) -> int:
@@ -764,6 +817,11 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             if cloud_config is not None:
 
                 def push_snapshot(snap: Snapshot, ts: datetime) -> None:
+                    # on_tick 은 같은 데몬 스레드에서 tier.collect() 직후 동기로
+                    # 호출되므로, tier 의 last-collect 상태가 이 snap 과 일치한다.
+                    collection_status, errors = derive_collection_status(
+                        snap, process_list_unavailable=tier.last_process_list_unavailable
+                    )
                     payload = build_observation_payload(
                         snapshot=snap,
                         hostname=hostname,
@@ -772,6 +830,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                         observed_at=ts,
                         host_id=cloud_config.host_id,
                         display_name=cloud_config.display_name,
+                        collection_status=collection_status,
+                        errors=errors,
                     )
                     post_observation(cloud_config, payload)
 

@@ -7,9 +7,14 @@ from typing import Any
 
 import pytest
 
-from gpu_usage_audit.cloud.snapshot import build_observation_payload
+from gpu_usage_audit.cloud.snapshot import (
+    build_observation_payload,
+    derive_collection_status,
+)
 from gpu_usage_audit.model import GPUSample, ProcSample, Snapshot
 from gpu_usage_audit.tier import FakeTier
+
+_GPU = GPUSample(uuid="GPU-0", util_pct=0, index=0, name="GPU", memory_total_mb=1000)
 
 OBSERVED_AT = datetime(2026, 6, 17, 4, 0, 0, tzinfo=UTC)
 
@@ -140,6 +145,31 @@ def test_collection_status_error_requires_errors() -> None:
     # ok + errors 도 모순.
     with pytest.raises(ValueError, match="must not include"):
         _build(Snapshot(), collection_status="ok", errors=["boom"])
+
+
+# ── derive_collection_status ─────────────────────────────────────
+
+
+def test_derive_status_ok_when_no_degradation() -> None:
+    snap = Snapshot(gpus=[_GPU])
+    assert derive_collection_status(snap) == ("ok", [])
+    assert derive_collection_status(snap, process_list_unavailable=False) == ("ok", [])
+
+
+def test_derive_status_partial_when_process_list_unavailable() -> None:
+    snap = Snapshot(gpus=[_GPU])
+    status, errors = derive_collection_status(snap, process_list_unavailable=True)
+    assert status == "partial"
+    assert errors == ["process_list_unavailable"]
+    # builder 검증을 그대로 통과해야 한다 (partial 은 errors ≥1).
+    payload = _build(snap, collection_status=status, errors=errors)
+    assert payload["collectionStatus"] == "partial"
+    assert payload["errors"] == ["process_list_unavailable"]
+
+
+def test_derive_status_partial_flag_ignored_when_no_gpus() -> None:
+    # GPU 가 0개면 partial 로 판정할 카드가 없다 — ok.
+    assert derive_collection_status(Snapshot(), process_list_unavailable=True) == ("ok", [])
 
 
 def test_fake_tier_snapshot_builds_valid_payload() -> None:

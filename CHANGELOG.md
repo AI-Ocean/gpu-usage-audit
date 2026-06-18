@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Cloud sync now emits a real `collectionStatus` instead of always reporting
+  `ok`. When core GPU metrics are collected but one or more cards' per-process
+  list is unavailable (permissions or transient NVML errors), `gua sync-once`
+  and `gua daemon --cloud` push `partial` with a `process_list_unavailable`
+  error while still sending the GPU data. When NVML initialization fails
+  entirely, `gua sync-once` now pushes an `error` heartbeat
+  (`nvml_init_failed`, empty GPU inventory) so a host that lost its driver
+  still surfaces a non-ok freshness signal on the board, then exits non-zero.
+
 ## 1.1.0 - 2026-06-17
 
 - Added optional GUA Board cloud sync. `gua enroll` claims a one-time

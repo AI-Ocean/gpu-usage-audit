@@ -12,6 +12,7 @@ from gpu_usage_audit.__main__ import gua_main
 from gpu_usage_audit.cloud.client import CloudError
 from gpu_usage_audit.cloud.config import CloudConfig, load_cloud_config, save_cloud_config
 from gpu_usage_audit.model import GPUSample, Snapshot
+from gpu_usage_audit.nvml import NVMLNotAvailableError
 
 
 def _config() -> CloudConfig:
@@ -239,6 +240,136 @@ def test_sync_once_unbuildable_payload_keeps_local_write_without_pushing(
         assert conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_sync_once_emits_partial_when_process_list_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "cloud.json"
+    save_cloud_config(_config(), config_path)
+    db_path = tmp_path / "gua.db"
+
+    class _PartialTier:
+        # core GPU metric 은 수집했지만 한 카드의 process list 가 권한 부족.
+        def probe(self) -> str:
+            return "560.35.05"
+
+        def collect(self, _ts: object) -> Snapshot:
+            return Snapshot(
+                gpus=[GPUSample(uuid="GPU-0", util_pct=10, index=0, name="GPU", memory_total_mb=1000)]
+            )
+
+        @property
+        def last_process_list_unavailable(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.NVMLTier", _PartialTier)
+    pushed: dict[str, Any] = {}
+
+    def fake_post(config: CloudConfig, payload: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+        pushed["payload"] = payload
+        return {}
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.post_observation", fake_post)
+
+    # --fake 없이 실 NVML 경로를 탄다 (위에서 NVMLTier 를 monkeypatch).
+    rc = gua_main(["sync-once", "--config", str(config_path), "--db", str(db_path)])
+
+    assert rc == 0
+    payload = pushed["payload"]
+    assert payload["collectionStatus"] == "partial"
+    assert payload["errors"] == ["process_list_unavailable"]
+    # 핵심: GPU 데이터는 그대로 push 됐다.
+    assert len(payload["gpus"]) == 1
+    out = capsys.readouterr().out
+    assert "partial: process_list_unavailable" in out
+    # local write 도 보존.
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_sync_once_pushes_error_heartbeat_when_nvml_init_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "cloud.json"
+    save_cloud_config(_config(), config_path)
+    db_path = tmp_path / "gua.db"
+
+    class _DeadTier:
+        # 드라이버를 잃은 host — NVML init 자체가 실패.
+        def probe(self) -> str:
+            raise NVMLNotAvailableError("the NVIDIA driver is not loaded")
+
+        def collect(self, _ts: object) -> Snapshot:  # pragma: no cover - 도달 안 함
+            raise AssertionError("collect must not run after probe failure")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.NVMLTier", _DeadTier)
+    pushed: dict[str, Any] = {}
+
+    def fake_post(config: CloudConfig, payload: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+        pushed["payload"] = payload
+        return {}
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.post_observation", fake_post)
+
+    rc = gua_main(["sync-once", "--config", str(config_path), "--db", str(db_path)])
+
+    # error heartbeat 는 보냈지만 수집 실패라 non-zero exit.
+    assert rc == 1
+    payload = pushed["payload"]
+    assert payload["collectionStatus"] == "error"
+    assert payload["errors"] == ["nvml_init_failed"]
+    assert payload["gpus"] == []
+    err = capsys.readouterr().err
+    assert "pushed error heartbeat" in err
+    assert "driver is not loaded" in err
+    # 데이터가 없으므로 local DB 는 쓰지 않는다.
+    assert not db_path.exists()
+
+
+def test_sync_once_error_heartbeat_push_failure_reports_both(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "cloud.json"
+    save_cloud_config(_config(), config_path)
+
+    class _DeadTier:
+        def probe(self) -> str:
+            raise NVMLNotAvailableError("the NVIDIA driver is not loaded")
+
+        def collect(self, _ts: object) -> Snapshot:  # pragma: no cover
+            raise AssertionError
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.NVMLTier", _DeadTier)
+
+    def fake_post(*_args: Any, **_kw: Any) -> dict[str, Any]:
+        raise CloudError("could not reach GUA Board server: connection refused")
+
+    monkeypatch.setattr("gpu_usage_audit.__main__.post_observation", fake_post)
+
+    rc = gua_main(["sync-once", "--config", str(config_path), "--db", str(tmp_path / "gua.db")])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "error heartbeat push also failed" in err
 
 
 def test_sync_once_creates_missing_db_parent_dir(
