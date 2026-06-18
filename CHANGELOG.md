@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-06-18
 
 - Cloud sync now emits a real `collectionStatus` instead of always reporting
   `ok`. When core GPU metrics are collected but one or more cards' per-process
