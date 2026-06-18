@@ -21,6 +21,35 @@ from . import SCHEMA_VERSION
 CollectionStatus = str  # "ok" | "partial" | "error" — 서버가 enum 검증.
 _UNKNOWN = "unknown"
 
+# 안정적인 short error code — 서버/board 가 freshness 신호로 표시한다.
+# 새 code 는 여기 한곳에 모아 builder/CLI/daemon 이 같은 문자열을 공유한다.
+ERROR_PROCESS_LIST_UNAVAILABLE = "process_list_unavailable"
+ERROR_NVML_INIT_FAILED = "nvml_init_failed"
+
+
+def derive_collection_status(
+    snapshot: Snapshot,
+    *,
+    process_list_unavailable: bool = False,
+) -> tuple[CollectionStatus, list[str]]:
+    """수집 결과에서 `(collectionStatus, errors)` 를 도출한다.
+
+    contract 와 같은 곳에 둬서 CLI(`sync-once`)/daemon 두 call site 가 같은
+    규칙을 공유한다. builder 의 검증(`partial`/`error` 는 errors ≥1, `ok` 는
+    errors 비어야 함)과 일관되게 만든다.
+
+    - GPU 가 하나라도 수집되고 일부 카드의 process list 만 권한/일시오류로
+      비었으면 → `partial` + `process_list_unavailable`. core GPU metric 은
+      그대로 push 한다.
+    - 그 외(모든 카드 정상, 또는 애초에 GPU 0개여도 push 흐름 자체는 정상) → `ok`.
+
+    NVML init 자체가 실패해 GPU inventory 가 아예 없는 `error` heartbeat 는
+    수집을 못 한 상황이라 이 함수가 아니라 call site 에서 직접 구성한다.
+    """
+    if snapshot.gpus and process_list_unavailable:
+        return "partial", [ERROR_PROCESS_LIST_UNAVAILABLE]
+    return "ok", []
+
 
 def build_observation_payload(
     *,

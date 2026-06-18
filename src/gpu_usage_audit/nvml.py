@@ -63,6 +63,10 @@ class NVMLTier:
         self._nvml: Any | None = None  # pynvml ModuleType
         self._initialized = False
         self._process_list_warning_uuids: set[str] = set()
+        # 가장 최근 collect() 에서 process list 를 읽지 못한 GPU UUID 들.
+        # warning 집합(반복 로그 억제용, 누적)과 달리 *틱마다 리셋* 되어
+        # 그 틱의 collectionStatus(partial) 판정에 쓰인다.
+        self._last_process_list_unavailable_uuids: set[str] = set()
 
     def __enter__(self) -> NVMLTier:
         return self
@@ -90,6 +94,7 @@ class NVMLTier:
 
         gpus: list[GPUSample] = []
         procs: list[ProcSample] = []
+        self._last_process_list_unavailable_uuids = set()  # 이 틱 기준으로 리셋.
         count = nvml.nvmlDeviceGetCount()
         for i in range(count):
             h = nvml.nvmlDeviceGetHandleByIndex(i)
@@ -114,6 +119,8 @@ class NVMLTier:
             try:
                 running = nvml.nvmlDeviceGetComputeRunningProcesses(h)
             except nvml.NVMLError as e:
+                # 이 틱의 partial 판정용 — collectionStatus 에 반영된다.
+                self._last_process_list_unavailable_uuids.add(uuid)
                 if uuid not in self._process_list_warning_uuids:
                     logger.warning(
                         "NVML process list unavailable for %s; idle-held classification "
@@ -140,6 +147,15 @@ class NVMLTier:
                     )
                 )
         return Snapshot(gpus=gpus, procs=procs)
+
+    @property
+    def last_process_list_unavailable(self) -> bool:
+        """가장 최근 collect() 에서 한 카드라도 process list 를 못 읽었는지.
+
+        True 면 core GPU metric 은 수집됐지만 일부 카드의 process 목록이
+        권한/일시오류로 비었다는 뜻 — cloud push 는 `partial` 로 보낸다.
+        """
+        return bool(self._last_process_list_unavailable_uuids)
 
     @staticmethod
     def _read_temperature(nvml: Any, handle: Any) -> int | None:

@@ -235,6 +235,41 @@ def test_collect_handles_per_device_running_processes_error(
     assert snap.procs == []
 
 
+def test_last_process_list_unavailable_tracks_per_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _make_mock_pynvml(
+        driver="x",
+        gpus=[{"uuid": "GPU-x", "util": 0, "procs": [{"pid": 1, "mem": 1024 * 1024}]}],
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+
+    def _raise(_h: Any) -> Any:
+        raise fake.NVMLError("permission denied")
+
+    def _ok(_h: Any) -> Any:
+        return [SimpleNamespace(pid=1, usedGpuMemory=1024 * 1024)]
+
+    with NVMLTier() as tier:
+        tier.probe()
+        # 정상 collect → process list 가용.
+        tier.collect(TS)
+        clean = tier.last_process_list_unavailable
+
+        # process list 가 실패하는 틱 → True (core GPU metric 은 유지).
+        fake.nvmlDeviceGetComputeRunningProcesses = MagicMock(side_effect=_raise)
+        snap = tier.collect(TS)
+        degraded = tier.last_process_list_unavailable
+
+        # 다시 정상으로 돌아오면 *틱마다 리셋* 된다.
+        fake.nvmlDeviceGetComputeRunningProcesses = MagicMock(side_effect=_ok)
+        tier.collect(TS)
+        recovered = tier.last_process_list_unavailable
+
+    assert clean is False
+    assert degraded is True  # core metric 은 유지된 채 partial 신호만 켜진다.
+    assert [g.uuid for g in snap.gpus] == ["GPU-x"]
+    assert recovered is False
+
+
 def test_probe_translates_nvml_error_to_friendly(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _make_mock_pynvml(driver="x", gpus=[])
     fake.nvmlInit = MagicMock(side_effect=fake.NVMLError("localized message", value=9))
