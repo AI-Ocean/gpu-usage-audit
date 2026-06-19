@@ -45,7 +45,7 @@ def load_host(conn: sqlite3.Connection) -> HostRow:
 HEADLINE_QUERY = """
 WITH s AS (
     SELECT gs.gpu_uuid, gs.ts, gs.run_id, gs.util_pct,
-           COALESCE(SUM(ps.mem_used_mb), 0) AS proc_mem_mb
+           COALESCE(SUM(COALESCE(ps.mem_used_mb, 0)), 0) AS proc_mem_mb
     FROM gpu_sample gs
     LEFT JOIN proc_sample ps
         ON ps.gpu_uuid = gs.gpu_uuid
@@ -101,7 +101,7 @@ def load_headline(conn: sqlite3.Connection, cutoff: datetime) -> Headline:
 IDLE_CAPACITY_QUERY = """
 WITH s AS (
     SELECT gs.gpu_uuid, gs.ts, gs.util_pct, gs.run_id,
-           COALESCE(SUM(ps.mem_used_mb), 0) AS proc_mem_mb
+           COALESCE(SUM(COALESCE(ps.mem_used_mb, 0)), 0) AS proc_mem_mb
     FROM gpu_sample gs
     LEFT JOIN proc_sample ps
         ON ps.gpu_uuid = gs.gpu_uuid
@@ -183,7 +183,7 @@ SELECT
     COUNT(*)                                                                                    AS samples
 FROM gpu_sample gs
 LEFT JOIN (
-    SELECT gpu_uuid, ts, run_id, SUM(mem_used_mb) AS proc_mem
+    SELECT gpu_uuid, ts, run_id, SUM(COALESCE(mem_used_mb, 0)) AS proc_mem
     FROM proc_sample
     GROUP BY gpu_uuid, ts, run_id
 ) ps ON ps.gpu_uuid = gs.gpu_uuid
@@ -231,7 +231,7 @@ WITH owned AS (
         gpu_uuid,
         ts,
         run_id,
-        SUM(mem_used_mb) AS mem_used_mb
+        SUM(COALESCE(mem_used_mb, 0)) AS mem_used_mb
     FROM proc_sample
     WHERE ts >= ?
     GROUP BY identity, gpu_uuid, ts, run_id

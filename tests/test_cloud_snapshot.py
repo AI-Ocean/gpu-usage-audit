@@ -13,6 +13,7 @@ from gpu_usage_audit.cloud.snapshot import (
 )
 from gpu_usage_audit.model import GPUSample, ProcSample, Snapshot
 from gpu_usage_audit.tier import FakeTier
+from gpu_usage_audit.usage_state import classify_usage_states
 
 _GPU = GPUSample(uuid="GPU-0", util_pct=0, index=0, name="GPU", memory_total_mb=1000)
 
@@ -78,8 +79,62 @@ def test_builds_contract_shaped_payload() -> None:
         "memoryUsedMb": 18420,
         "temperatureC": 54,
         "powerW": 72,
-        "processes": [{"pid": 12345, "linuxUser": "lee", "name": "python", "memoryUsedMb": 18200}],
+        "processes": [
+            {
+                "pid": 12345,
+                "linuxUser": "lee",
+                "name": "python",
+                "type": "compute",
+                "memoryUsedMb": 18200,
+            }
+        ],
     }
+
+
+def test_emits_usage_state_and_nullable_process_memory() -> None:
+    snap = Snapshot(
+        gpus=[
+            GPUSample(
+                uuid="GPU-0",
+                util_pct=0,
+                index=0,
+                name="GPU",
+                memory_total_mb=1000,
+                usage_state="idle_held",
+            )
+        ],
+        procs=[
+            ProcSample(
+                gpu_uuid="GPU-0",
+                pid=10,
+                mem_used_mb=None,
+                loginuid_user="lee",
+                process_name="python",
+                process_type="compute",
+            )
+        ],
+    )
+
+    gpu = _build(snap)["gpus"][0]
+
+    assert gpu["usageState"] == "idle_held"
+    assert gpu["processes"] == [
+        {
+            "pid": 10,
+            "linuxUser": "lee",
+            "name": "python",
+            "type": "compute",
+            "memoryUsedMb": None,
+        }
+    ]
+
+
+def test_omits_usage_state_when_compute_residency_unknown() -> None:
+    snap = Snapshot(
+        gpus=[GPUSample(uuid="GPU-0", util_pct=0, index=0, name="GPU", memory_total_mb=1000)]
+    )
+
+    assert "usageState" not in _build(snap)["gpus"][0]
 
 
 def test_clamps_and_fills_unknown_identities() -> None:
@@ -108,7 +163,13 @@ def test_clamps_and_fills_unknown_identities() -> None:
     assert gpu["name"] == "unknown"
     assert gpu["temperatureC"] is None and gpu["powerW"] is None
     assert gpu["processes"] == [
-        {"pid": 1, "linuxUser": "unknown", "name": "unknown", "memoryUsedMb": 10}
+        {
+            "pid": 1,
+            "linuxUser": "unknown",
+            "name": "unknown",
+            "type": "compute",
+            "memoryUsedMb": 10,
+        }
     ]
 
 
@@ -175,8 +236,12 @@ def test_derive_status_partial_flag_ignored_when_no_gpus() -> None:
 def test_fake_tier_snapshot_builds_valid_payload() -> None:
     # FakeTier 출력이 그대로 contract 모양으로 변환되는지 (sync-once --fake 기반).
     snap = FakeTier().collect(OBSERVED_AT)
+    classify_usage_states(snap, sync_once=True)
     payload = _build(snap)
     assert [g["index"] for g in payload["gpus"]] == [0, 1, 2]
+    states = {gpu["uuid"]: gpu["usageState"] for gpu in payload["gpus"]}
+    assert states == {"GPU-0": "active", "GPU-1": "idle_held", "GPU-2": "idle"}
+    assert payload["gpus"][2]["processes"][0]["type"] == "graphics"
     for gpu in payload["gpus"]:
         assert gpu["memoryTotalMb"] > 0
         assert 0 <= gpu["utilPct"] <= 100

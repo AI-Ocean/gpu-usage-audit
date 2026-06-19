@@ -60,6 +60,7 @@ def _make_mock_pynvml(
     """가짜 pynvml 모듈. NVMLTier 가 호출하는 함수들만 구현.
 
     gpus 항목은 {"uuid", "util", "procs": [{"pid", "mem"}]} 형태.
+    "graphics_procs", "compute_error", "graphics_error" 도 선택 지원.
     선택 키: "name", "mem_total", "mem_used", "temp", "power_mw" (없으면 기본값).
     mem=None 이면 usedGpuMemory 가 None — skip 검증용.
     """
@@ -96,11 +97,22 @@ def _make_mock_pynvml(
     )
     nvml.nvmlDeviceGetTemperature = MagicMock(side_effect=lambda h, sensor: h.get("temp", 50))
     nvml.nvmlDeviceGetPowerUsage = MagicMock(side_effect=lambda h: h.get("power_mw", 70000))
-    nvml.nvmlDeviceGetComputeRunningProcesses = MagicMock(
-        side_effect=lambda h: [
-            SimpleNamespace(pid=p["pid"], usedGpuMemory=p["mem"]) for p in h["procs"]
-        ]
-    )
+
+    def _process_infos(items: list[dict[str, Any]]) -> list[SimpleNamespace]:
+        return [SimpleNamespace(pid=p["pid"], usedGpuMemory=p["mem"]) for p in items]
+
+    def _compute_processes(h: dict[str, Any]) -> list[SimpleNamespace]:
+        if h.get("compute_error"):
+            raise nvml.NVMLError("compute denied")
+        return _process_infos(h.get("procs", []))
+
+    def _graphics_processes(h: dict[str, Any]) -> list[SimpleNamespace]:
+        if h.get("graphics_error"):
+            raise nvml.NVMLError("graphics denied")
+        return _process_infos(h.get("graphics_procs", []))
+
+    nvml.nvmlDeviceGetComputeRunningProcesses = MagicMock(side_effect=_compute_processes)
+    nvml.nvmlDeviceGetGraphicsRunningProcesses = MagicMock(side_effect=_graphics_processes)
     return nvml
 
 
@@ -134,7 +146,7 @@ def test_collect_converts_bytes_and_memory_units(monkeypatch: pytest.MonkeyPatch
                 "util": 2,
                 "procs": [
                     {"pid": 5678, "mem": 8 * 1024 * 1024 * 1024},
-                    # usedGpuMemory=None → skip (NVML 권한 부족 케이스).
+                    # usedGpuMemory=None → memory-unknown 으로 보존.
                     {"pid": 9999, "mem": None},
                 ],
             },
@@ -150,10 +162,85 @@ def test_collect_converts_bytes_and_memory_units(monkeypatch: pytest.MonkeyPatch
         ("GPU-aaaa", 80),
         ("GPU-bbbb", 2),
     ]
-    assert [(p.gpu_uuid, p.pid, p.mem_used_mb) for p in snap.procs] == [
-        ("GPU-aaaa", 1234, 71680),
-        ("GPU-bbbb", 5678, 8192),
+    assert [(p.gpu_uuid, p.pid, p.mem_used_mb, p.process_type) for p in snap.procs] == [
+        ("GPU-aaaa", 1234, 71680, "compute"),
+        ("GPU-bbbb", 5678, 8192, "compute"),
+        ("GPU-bbbb", 9999, None, "compute"),
     ]
+
+
+def test_collect_includes_graphics_processes_and_dedups_compute_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _make_mock_pynvml(
+        driver="x",
+        gpus=[
+            {
+                "uuid": "GPU-x",
+                "util": 0,
+                "procs": [
+                    {"pid": 10, "mem": 1024 * 1024},
+                    {"pid": 20, "mem": 2 * 1024 * 1024},
+                ],
+                "graphics_procs": [
+                    {"pid": 20, "mem": 3 * 1024 * 1024},
+                    {"pid": 30, "mem": None},
+                ],
+            }
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+
+    with NVMLTier() as tier:
+        tier.probe()
+        snap = tier.collect(TS)
+
+    assert [(p.pid, p.mem_used_mb, p.process_type) for p in snap.procs] == [
+        (10, 1, "compute"),
+        (20, 2, "compute"),
+        (30, None, "graphics"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("compute_error", "graphics_error", "want_pids", "want_compute_unavailable"),
+    [
+        (False, False, [10, 20], False),
+        (False, True, [10], False),
+        (True, False, [20], True),
+        (True, True, [], True),
+    ],
+)
+def test_collect_handles_compute_and_graphics_failures_independently(
+    monkeypatch: pytest.MonkeyPatch,
+    compute_error: bool,
+    graphics_error: bool,
+    want_pids: list[int],
+    want_compute_unavailable: bool,
+) -> None:
+    fake = _make_mock_pynvml(
+        driver="x",
+        gpus=[
+            {
+                "uuid": "GPU-x",
+                "util": 0,
+                "procs": [{"pid": 10, "mem": 1024 * 1024}],
+                "graphics_procs": [{"pid": 20, "mem": 2 * 1024 * 1024}],
+                "compute_error": compute_error,
+                "graphics_error": graphics_error,
+            }
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+
+    with NVMLTier() as tier:
+        tier.probe()
+        snap = tier.collect(TS)
+        degraded = tier.last_process_list_unavailable
+
+    assert [p.pid for p in snap.procs] == want_pids
+    assert degraded is (compute_error or graphics_error)
+    assert ("GPU-x" in snap.compute_processes_unavailable_uuids) is want_compute_unavailable
 
 
 def test_collect_gathers_enriched_device_fields(monkeypatch: pytest.MonkeyPatch) -> None:

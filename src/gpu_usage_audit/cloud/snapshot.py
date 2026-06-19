@@ -90,22 +90,23 @@ def build_observation_payload(
             raise ValueError(f"gpu {g.uuid} is missing a positive memoryTotalMb")
         total = g.memory_total_mb
         used = _clamp(g.memory_used_mb or 0, 0, total)
-        gpus.append(
-            {
-                "index": g.index if g.index is not None else position,
-                "uuid": g.uuid,
-                "name": g.name or _UNKNOWN,
-                "memoryTotalMb": total,
-                "utilPct": _clamp(g.util_pct, 0, 100),
-                "memoryUsedMb": used,
-                # 서버 contract 는 temperatureC/powerW 를 ge=0 으로 검증 — util/memory 와
-                # 같이 방어적으로 음수 sentinel 을 0 으로 눌러 한 GPU의 이상치가 전체
-                # snapshot 을 422 로 떨어뜨리지 않게 한다.
-                "temperatureC": _nonneg_or_none(g.temperature_c),
-                "powerW": _nonneg_or_none(g.power_w),
-                "processes": _build_processes(procs_by_uuid.get(g.uuid, [])),
-            }
-        )
+        gpu_payload: dict[str, Any] = {
+            "index": g.index if g.index is not None else position,
+            "uuid": g.uuid,
+            "name": g.name or _UNKNOWN,
+            "memoryTotalMb": total,
+            "utilPct": _clamp(g.util_pct, 0, 100),
+            "memoryUsedMb": used,
+            # 서버 contract 는 temperatureC/powerW 를 ge=0 으로 검증 — util/memory 와
+            # 같이 방어적으로 음수 sentinel 을 0 으로 눌러 한 GPU의 이상치가 전체
+            # snapshot 을 422 로 떨어뜨리지 않게 한다.
+            "temperatureC": _nonneg_or_none(g.temperature_c),
+            "powerW": _nonneg_or_none(g.power_w),
+            "processes": _build_processes(procs_by_uuid.get(g.uuid, [])),
+        }
+        if g.usage_state is not None:
+            gpu_payload["usageState"] = g.usage_state
+        gpus.append(gpu_payload)
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -127,7 +128,8 @@ def _build_processes(procs: list[ProcSample]) -> list[dict[str, Any]]:
                 "pid": p.pid,
                 "linuxUser": p.loginuid_user or _UNKNOWN,
                 "name": p.process_name or _UNKNOWN,
-                "memoryUsedMb": max(0, p.mem_used_mb),
+                "type": p.process_type,
+                "memoryUsedMb": None if p.mem_used_mb is None else max(0, p.mem_used_mb),
             }
         )
     return out

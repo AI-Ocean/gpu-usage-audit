@@ -40,7 +40,7 @@ class FakeTier:
     진짜 데몬에선 분/시간 단위로 일어날 일이지만, 데모용으로 5틱에 압축.
 
     GPU-1: 항상 Jupyter 가 8GB 잡고 있음 → 매 틱 idle-held.
-    GPU-2: 항상 truly-idle (proc 없음).
+    GPU-2: graphics-only idle (Xorg 시뮬레이션, compute proc 없음).
 
     같은 호출 시퀀스에 같은 결과 — `_tick` 이 인스턴스 내부 상태이므로
     두 인스턴스가 *독립적으로* 진행된다.
@@ -104,6 +104,15 @@ class FakeTier:
                     gpu_index=1,
                     process_name=None,
                 ),
+                ProcSample(
+                    gpu_uuid="GPU-2",
+                    pid=1200,
+                    mem_used_mb=128,
+                    loginuid_user="gdm",
+                    gpu_index=2,
+                    process_name="Xorg",
+                    process_type="graphics",
+                ),
             ]
         )
 
@@ -111,7 +120,7 @@ class FakeTier:
             gpus=[
                 _fake_gpu("GPU-0", index=0, util_pct=gpu0_util, used_mb=gpu0_mem),
                 _fake_gpu("GPU-1", index=1, util_pct=2, used_mb=8200),
-                _fake_gpu("GPU-2", index=2, util_pct=0, used_mb=0),
+                _fake_gpu("GPU-2", index=2, util_pct=0, used_mb=128),
             ],
             procs=procs,
         )

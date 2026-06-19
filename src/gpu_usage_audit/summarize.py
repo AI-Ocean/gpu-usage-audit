@@ -28,12 +28,12 @@ def summarize(snap: Snapshot) -> list[CardSummary]:
 
     # mem 내림차순 정렬 — render 측이 §1/§3 표시에 활용.
     for uuid in procs_by_gpu:
-        procs_by_gpu[uuid].sort(key=lambda p: p.mem_used_mb, reverse=True)
+        procs_by_gpu[uuid].sort(key=lambda p: p.mem_used_mb or 0, reverse=True)
 
     out: list[CardSummary] = []
     for g in snap.gpus:
         procs = procs_by_gpu.get(g.uuid, [])
-        mem = sum(p.mem_used_mb for p in procs)
+        mem = sum(p.mem_used_mb or 0 for p in procs)
         out.append(
             CardSummary(
                 uuid=g.uuid,
