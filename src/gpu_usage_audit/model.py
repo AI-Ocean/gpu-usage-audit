@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
 from .classify import Class
+
+ProcessType = Literal["compute", "graphics"]
+UsageState = Literal["active", "idle_held", "idle"]
 
 
 @dataclass(slots=True)
@@ -34,6 +38,7 @@ class GPUSample:
     memory_used_mb: int | None = None
     temperature_c: int | None = None
     power_w: int | None = None
+    usage_state: UsageState | None = None
 
 
 @dataclass(slots=True)
@@ -47,10 +52,11 @@ class ProcSample:
 
     gpu_uuid: str
     pid: int
-    mem_used_mb: int
+    mem_used_mb: int | None
     loginuid_user: str | None = None
     gpu_index: int | None = None
     process_name: str | None = None
+    process_type: ProcessType = "compute"
 
 
 @dataclass(slots=True)
@@ -62,6 +68,7 @@ class Snapshot:
 
     gpus: list[GPUSample] = field(default_factory=list)
     procs: list[ProcSample] = field(default_factory=list)
+    compute_processes_unavailable_uuids: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)

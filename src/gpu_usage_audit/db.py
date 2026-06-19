@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from .model import GPUSample, HostMeta, Snapshot
 
@@ -39,16 +40,20 @@ CREATE TABLE IF NOT EXISTS gpu_sample (
     ts        DATETIME NOT NULL,
     gpu_uuid  TEXT     NOT NULL,
     util_pct  INTEGER  NOT NULL,
-    run_id    INTEGER REFERENCES daemon_run(id)
+    run_id    INTEGER REFERENCES daemon_run(id),
+    usage_state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS proc_sample (
     ts            DATETIME NOT NULL,
     gpu_uuid      TEXT     NOT NULL,
     pid           INTEGER  NOT NULL,
-    mem_used_mb   INTEGER  NOT NULL,
+    mem_used_mb   INTEGER,
     loginuid_user TEXT,
-    run_id        INTEGER REFERENCES daemon_run(id)
+    run_id        INTEGER REFERENCES daemon_run(id),
+    gpu_index     INTEGER,
+    process_name  TEXT,
+    process_type  TEXT NOT NULL DEFAULT 'compute'
 );
 
 -- gpu_device: device 정체성을 시변 metric 에서 분리해 정규화 (v1.1).
@@ -111,8 +116,61 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "gpu_sample", "memory_used_mb", "INTEGER")
     _ensure_column(conn, "gpu_sample", "temperature_c", "INTEGER")
     _ensure_column(conn, "gpu_sample", "power_w", "INTEGER")
+    _ensure_column(conn, "gpu_sample", "usage_state", "TEXT")
+    _rebuild_proc_sample_if_needed(conn)
     _ensure_column(conn, "proc_sample", "gpu_index", "INTEGER")
     _ensure_column(conn, "proc_sample", "process_name", "TEXT")
+    _ensure_column(conn, "proc_sample", "process_type", "TEXT NOT NULL DEFAULT 'compute'")
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, tuple[Any, ...]]:
+    return {row[1]: row for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _rebuild_proc_sample_if_needed(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "proc_sample")
+    mem_col = columns.get("mem_used_mb")
+    if mem_col is None:
+        return
+    mem_not_null = bool(mem_col[3])
+    if not mem_not_null and "process_type" in columns:
+        return
+
+    def existing_or_null(column: str) -> str:
+        return column if column in columns else "NULL"
+
+    process_type_expr = (
+        "COALESCE(process_type, 'compute')" if "process_type" in columns else "'compute'"
+    )
+    with conn:
+        conn.execute("DROP INDEX IF EXISTS idx_proc_sample_uuid_ts")
+        conn.execute("ALTER TABLE proc_sample RENAME TO proc_sample_legacy")
+        conn.execute(
+            """
+            CREATE TABLE proc_sample (
+                ts            DATETIME NOT NULL,
+                gpu_uuid      TEXT     NOT NULL,
+                pid           INTEGER  NOT NULL,
+                mem_used_mb   INTEGER,
+                loginuid_user TEXT,
+                run_id        INTEGER REFERENCES daemon_run(id),
+                gpu_index     INTEGER,
+                process_name  TEXT,
+                process_type  TEXT NOT NULL DEFAULT 'compute'
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO proc_sample"
+            "(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, run_id, "
+            "gpu_index, process_name, process_type) "
+            "SELECT ts, gpu_uuid, pid, mem_used_mb, loginuid_user, "
+            f"{existing_or_null('run_id')}, {existing_or_null('gpu_index')}, "
+            f"{existing_or_null('process_name')}, {process_type_expr} "
+            "FROM proc_sample_legacy"
+        )
+        conn.execute("DROP TABLE proc_sample_legacy")
+        conn.execute("CREATE INDEX idx_proc_sample_uuid_ts ON proc_sample(gpu_uuid, ts)")
 
 
 def _ensure_column(
@@ -216,8 +274,9 @@ def write_snapshot(
         if snap.gpus:
             conn.executemany(
                 "INSERT INTO gpu_sample"
-                "(ts, gpu_uuid, util_pct, gpu_index, memory_used_mb, temperature_c, power_w, run_id) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "(ts, gpu_uuid, util_pct, gpu_index, memory_used_mb, temperature_c, "
+                "power_w, run_id, usage_state) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         ts_str,
@@ -228,6 +287,7 @@ def write_snapshot(
                         g.temperature_c,
                         g.power_w,
                         run_id,
+                        g.usage_state,
                     )
                     for g in snap.gpus
                 ],
@@ -235,8 +295,9 @@ def write_snapshot(
         if snap.procs:
             conn.executemany(
                 "INSERT INTO proc_sample"
-                "(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, gpu_index, process_name, run_id) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, gpu_index, "
+                "process_name, run_id, process_type) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         ts_str,
@@ -247,6 +308,7 @@ def write_snapshot(
                         p.gpu_index,
                         p.process_name,
                         run_id,
+                        p.process_type,
                     )
                     for p in snap.procs
                 ],

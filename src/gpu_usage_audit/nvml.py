@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from .model import GPUSample, ProcSample, Snapshot
+from .model import GPUSample, ProcessType, ProcSample, Snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -52,21 +52,19 @@ class NVMLTier:
       `with NVMLTier() as t:` 컨텍스트 매니저로 두 메서드를 한 묶음으로.
 
     NVML 호출 정책:
-      - utilization, compute processes 만 수집 (encoder/graphics/MPS 제외).
-        v0.2.0 의 핵심 funnel 메시지는 *compute* idle-held 라.
-      - usedGpuMemory==None (NVML 의 권한 부족/N/A) 인 프로세스 → skip.
-        그 프로세스가 정말로 메모리를 안 쓰는지 vs. 못 보는지 구별 불가
-        한 채로 0 MB 적재하면 idle-held 분류가 망가짐.
+      - utilization, compute processes, graphics processes 를 수집한다.
+      - usedGpuMemory==None 은 "memory unknown" 으로 보존한다.
+      - compute process list 실패와 graphics process list 실패는 독립 처리한다.
     """
 
     def __init__(self) -> None:
         self._nvml: Any | None = None  # pynvml ModuleType
         self._initialized = False
-        self._process_list_warning_uuids: set[str] = set()
+        self._process_list_warning_keys: set[tuple[str, str]] = set()
         # 가장 최근 collect() 에서 process list 를 읽지 못한 GPU UUID 들.
-        # warning 집합(반복 로그 억제용, 누적)과 달리 *틱마다 리셋* 되어
-        # 그 틱의 collectionStatus(partial) 판정에 쓰인다.
-        self._last_process_list_unavailable_uuids: set[str] = set()
+        # compute 실패는 usageState 생략에도 쓰이므로 graphics 실패와 분리한다.
+        self._last_compute_process_list_unavailable_uuids: set[str] = set()
+        self._last_graphics_process_list_unavailable_uuids: set[str] = set()
 
     def __enter__(self) -> NVMLTier:
         return self
@@ -94,7 +92,8 @@ class NVMLTier:
 
         gpus: list[GPUSample] = []
         procs: list[ProcSample] = []
-        self._last_process_list_unavailable_uuids = set()  # 이 틱 기준으로 리셋.
+        self._last_compute_process_list_unavailable_uuids = set()
+        self._last_graphics_process_list_unavailable_uuids = set()
         count = nvml.nvmlDeviceGetCount()
         for i in range(count):
             h = nvml.nvmlDeviceGetHandleByIndex(i)
@@ -114,39 +113,79 @@ class NVMLTier:
                 )
             )
 
-            # 일부 GPU/드라이버는 권한이 부족하면 이 호출 자체가 NVMLError —
-            # 해당 카드의 process list 만 비우고 진행.
-            try:
-                running = nvml.nvmlDeviceGetComputeRunningProcesses(h)
-            except nvml.NVMLError as e:
-                # 이 틱의 partial 판정용 — collectionStatus 에 반영된다.
-                self._last_process_list_unavailable_uuids.add(uuid)
-                if uuid not in self._process_list_warning_uuids:
-                    logger.warning(
-                        "NVML process list unavailable for %s; idle-held classification "
-                        "may be understated: %s",
-                        uuid,
-                        e,
-                    )
-                    self._process_list_warning_uuids.add(uuid)
-                running = []
+            compute_running = self._read_running_processes(
+                nvml,
+                h,
+                uuid,
+                process_type="compute",
+                getter_name="nvmlDeviceGetComputeRunningProcesses",
+            )
+            graphics_running = self._read_running_processes(
+                nvml,
+                h,
+                uuid,
+                process_type="graphics",
+                getter_name="nvmlDeviceGetGraphicsRunningProcesses",
+            )
 
-            for p in running:
-                # usedGpuMemory 가 None 이면 "측정 불가" 의미 — 0 으로 적재
-                # 하면 분류가 truly-idle 로 가버려 사실 왜곡. skip.
-                used = getattr(p, "usedGpuMemory", None)
-                if used is None:
-                    continue
-                mem_mb = int(used) // (1024 * 1024)
-                procs.append(
-                    ProcSample(
+            process_groups: tuple[tuple[ProcessType, list[Any]], ...] = (
+                ("compute", compute_running),
+                ("graphics", graphics_running),
+            )
+            procs_by_pid: dict[int, ProcSample] = {}
+            for process_type, running in process_groups:
+                for p in running:
+                    pid = int(p.pid)
+                    if process_type == "graphics" and pid in procs_by_pid:
+                        continue
+                    used = getattr(p, "usedGpuMemory", None)
+                    mem_mb = None if used is None else int(used) // (1024 * 1024)
+                    procs_by_pid[pid] = ProcSample(
                         gpu_uuid=uuid,
-                        pid=int(p.pid),
+                        pid=pid,
                         mem_used_mb=mem_mb,
                         gpu_index=i,
+                        process_type=process_type,
                     )
+            procs.extend(procs_by_pid.values())
+        return Snapshot(
+            gpus=gpus,
+            procs=procs,
+            compute_processes_unavailable_uuids=set(
+                self._last_compute_process_list_unavailable_uuids
+            ),
+        )
+
+    def _read_running_processes(
+        self,
+        nvml: Any,
+        handle: Any,
+        uuid: str,
+        *,
+        process_type: ProcessType,
+        getter_name: str,
+    ) -> list[Any]:
+        try:
+            getter = getattr(nvml, getter_name)
+            return list(getter(handle))
+        except (nvml.NVMLError, AttributeError) as e:
+            unavailable = (
+                self._last_compute_process_list_unavailable_uuids
+                if process_type == "compute"
+                else self._last_graphics_process_list_unavailable_uuids
+            )
+            unavailable.add(uuid)
+            warning_key = (uuid, process_type)
+            if warning_key not in self._process_list_warning_keys:
+                logger.warning(
+                    "NVML %s process list unavailable for %s; usage classification "
+                    "may fall back: %s",
+                    process_type,
+                    uuid,
+                    e,
                 )
-        return Snapshot(gpus=gpus, procs=procs)
+                self._process_list_warning_keys.add(warning_key)
+            return []
 
     @property
     def last_process_list_unavailable(self) -> bool:
@@ -155,7 +194,10 @@ class NVMLTier:
         True 면 core GPU metric 은 수집됐지만 일부 카드의 process 목록이
         권한/일시오류로 비었다는 뜻 — cloud push 는 `partial` 로 보낸다.
         """
-        return bool(self._last_process_list_unavailable_uuids)
+        return bool(
+            self._last_compute_process_list_unavailable_uuids
+            or self._last_graphics_process_list_unavailable_uuids
+        )
 
     @staticmethod
     def _read_temperature(nvml: Any, handle: Any) -> int | None:

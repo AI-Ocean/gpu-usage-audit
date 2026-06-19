@@ -25,6 +25,7 @@ from .db import start_daemon_run, write_snapshot
 from .model import HostMeta, ProcSample, Snapshot
 from .summarize import summarize
 from .tier import Tier
+from .usage_state import UsageStateTracker
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ def _tick(
     out: TextIO,
     run_id: int,
     on_tick: OnTick | None = None,
+    usage_tracker: UsageStateTracker | None = None,
 ) -> None:
     """한 틱: tier.collect → loginuid/process_name 해석 → 적재 → 한 줄 로그.
 
@@ -89,8 +91,10 @@ def _tick(
     이미 커밋된 local write 와 다음 틱을 막지 않는다 — 로그만 남기고 계속.
     """
     snap = tier.collect(ts)
-    # ProcSample 이 mutable slots — *제자리* 갱신.
+    # ProcSample/GPUSample 이 mutable slots — *제자리* 갱신.
     resolve_proc_identities(snap.procs, lookup, name_lookup)
+    if usage_tracker is not None:
+        usage_tracker.apply(snap)
     write_snapshot(db, ts, host, snap, run_id=run_id)
 
     classes = "  ".join(f"{c.uuid}={c.klass.value:<10}" for c in summarize(snap))
@@ -142,6 +146,7 @@ def run_daemon(
     next_at = time.monotonic()
     n = 0
     run_id: int | None = None
+    usage_tracker = UsageStateTracker()
     while not stop.is_set():
         if max_ticks is not None and n >= max_ticks:
             break
@@ -150,7 +155,19 @@ def run_daemon(
             run_id = start_daemon_run(db, datetime.now(UTC), interval)
 
         try:
-            _tick(tier, db, host, lookup, name_lookup, datetime.now(UTC), n, out, run_id, on_tick)
+            _tick(
+                tier,
+                db,
+                host,
+                lookup,
+                name_lookup,
+                datetime.now(UTC),
+                n,
+                out,
+                run_id,
+                on_tick,
+                usage_tracker,
+            )
         except Exception:
             logger.exception("tick %d failed; continuing", n)
         n += 1

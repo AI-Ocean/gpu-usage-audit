@@ -55,13 +55,13 @@ def test_fake_tier_phase_cycle(tick_idx: int, util: int, mem: int) -> None:
     assert gpu0.util_pct == util, f"tick {tick_idx}: GPU-0 util"
 
     # GPU-0 메모리 (해당 카드 proc 합)
-    gpu0_mem = sum(p.mem_used_mb for p in last_snap.procs if p.gpu_uuid == "GPU-0")
+    gpu0_mem = sum((p.mem_used_mb or 0) for p in last_snap.procs if p.gpu_uuid == "GPU-0")
     assert gpu0_mem == mem, f"tick {tick_idx}: GPU-0 mem"
 
 
 def test_fake_tier_gpu1_and_gpu2_invariants() -> None:
     # GPU-1: 매 틱 util=2 (Jupyter idle-held)
-    # GPU-2: 매 틱 util=0 (truly-idle)
+    # GPU-2: 매 틱 util=0 (graphics-only idle)
     f = FakeTier()
     for _ in range(7):
         snap = f.collect(TS)

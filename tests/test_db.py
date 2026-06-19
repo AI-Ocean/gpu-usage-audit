@@ -102,6 +102,38 @@ def test_write_snapshot_inserts_rows(db: sqlite3.Connection, host: HostMeta) -> 
     assert null_count == 1
 
 
+def test_write_snapshot_stores_usage_state_and_nullable_process_memory(
+    db: sqlite3.Connection,
+    host: HostMeta,
+) -> None:
+    ts = datetime(2026, 6, 19, 4, 0, 0, tzinfo=UTC)
+    snap = Snapshot(
+        gpus=[GPUSample(uuid="GPU-0", util_pct=0, usage_state="idle_held")],
+        procs=[
+            ProcSample(
+                gpu_uuid="GPU-0",
+                pid=100,
+                mem_used_mb=None,
+                process_type="compute",
+            ),
+            ProcSample(
+                gpu_uuid="GPU-0",
+                pid=200,
+                mem_used_mb=128,
+                process_type="graphics",
+            ),
+        ],
+    )
+
+    write_snapshot(db, ts, host, snap)
+
+    assert db.execute("SELECT usage_state FROM gpu_sample").fetchone()[0] == "idle_held"
+    rows = db.execute(
+        "SELECT pid, mem_used_mb, process_type FROM proc_sample ORDER BY pid"
+    ).fetchall()
+    assert rows == [(100, None, "compute"), (200, 128, "graphics")]
+
+
 def test_host_upsert_single_row(db: sqlite3.Connection, host: HostMeta) -> None:
     # 두 틱 적재 → host 는 *한 행* 만 (last_seen 만 갱신).
     ts1 = datetime(2026, 5, 11, 0, 0, 0, tzinfo=UTC)
@@ -156,8 +188,10 @@ def test_write_snapshot_stores_enriched_metric_columns(
         "SELECT gpu_index, memory_used_mb, temperature_c, power_w FROM gpu_sample"
     ).fetchone()
     assert gpu_row == (0, 18000, 54, 72)
-    proc_row = db.execute("SELECT gpu_index, process_name FROM proc_sample").fetchone()
-    assert proc_row == (0, "python")
+    proc_row = db.execute(
+        "SELECT gpu_index, process_name, process_type FROM proc_sample"
+    ).fetchone()
+    assert proc_row == (0, "python", "compute")
 
 
 def test_write_snapshot_upserts_gpu_device_identity(
@@ -204,7 +238,7 @@ def test_migrate_schema_upgrades_legacy_db_in_place(tmp_path: Path) -> None:
             started_at DATETIME, interval_seconds REAL);
         CREATE TABLE gpu_sample (ts DATETIME, gpu_uuid TEXT, util_pct INTEGER);
         CREATE TABLE proc_sample (ts DATETIME, gpu_uuid TEXT, pid INTEGER,
-            mem_used_mb INTEGER, loginuid_user TEXT);
+            mem_used_mb INTEGER NOT NULL, loginuid_user TEXT);
         INSERT INTO gpu_sample(ts, gpu_uuid, util_pct) VALUES('2026-01-01T00:00:00+00:00','GPU-0',5);
         """
     )
@@ -216,13 +250,28 @@ def test_migrate_schema_upgrades_legacy_db_in_place(tmp_path: Path) -> None:
         gpu_cols = {row[1] for row in conn.execute("PRAGMA table_info(gpu_sample)")}
         assert {"gpu_index", "memory_used_mb", "temperature_c", "power_w", "run_id"} <= gpu_cols
         proc_cols = {row[1] for row in conn.execute("PRAGMA table_info(proc_sample)")}
-        assert {"gpu_index", "process_name", "run_id"} <= proc_cols
+        assert {"gpu_index", "process_name", "process_type", "run_id"} <= proc_cols
+        proc_info = {row[1]: row for row in conn.execute("PRAGMA table_info(proc_sample)")}
+        assert proc_info["mem_used_mb"][3] == 0
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert "gpu_device" in tables
-        # 기존 데이터 보존.
+        # 기존 데이터 보존 + nullable memory insert 가능.
         assert conn.execute("SELECT util_pct FROM gpu_sample").fetchone()[0] == 5
+        write_snapshot(
+            conn,
+            datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            HostMeta("h", "bare", "d", datetime(2026, 1, 1, tzinfo=UTC)),
+            Snapshot(
+                gpus=[GPUSample(uuid="GPU-0", util_pct=0)],
+                procs=[ProcSample(gpu_uuid="GPU-0", pid=10, mem_used_mb=None)],
+            ),
+        )
+        row = conn.execute(
+            "SELECT mem_used_mb, process_type FROM proc_sample WHERE pid=10"
+        ).fetchone()
+        assert row == (None, "compute")
     finally:
         conn.close()
 

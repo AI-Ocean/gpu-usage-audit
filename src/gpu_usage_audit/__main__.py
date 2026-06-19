@@ -74,6 +74,7 @@ from .report import (
     load_top_identities,
 )
 from .tier import FakeTier
+from .usage_state import classify_usage_states
 
 _DURATION_RE = re.compile(r"^(?P<v>\d+(?:\.\d+)?)(?P<u>ms|s|m|h|d)$")
 _DURATION_UNITS = {
@@ -510,6 +511,7 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
         tier = FakeTier()
         driver = tier.probe()
         snap = tier.collect(observed_at)
+        classify_usage_states(snap, sync_once=True)
     else:
         nvml_tier = NVMLTier()
         try:
@@ -523,6 +525,7 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
             snap = nvml_tier.collect(observed_at)
             process_list_unavailable = nvml_tier.last_process_list_unavailable
             resolve_proc_identities(snap.procs, system_user_lookup, system_process_name_lookup)
+            classify_usage_states(snap, sync_once=True)
         finally:
             nvml_tier.close()
 
