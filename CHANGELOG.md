@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0 - 2026-06-19
+
+- Cloud sync now classifies each GPU from NVML compute and graphics process
+  state and emits per-GPU `usageState` (`active`, `idle_held`, or `idle`) for
+  GUA Board availability decisions.
+- Process payloads now tag `compute` versus `graphics` ownership and preserve
+  unknown NVML `usedGpuMemory` as `memoryUsedMb: null`, so display-only
+  graphics processes do not make a GPU look occupied by compute.
+- Local SQLite history upgrades in place with nullable process memory, process
+  type, and GPU usage state columns; fake sync snapshots cover active,
+  idle-held, and graphics-only idle GPUs.
+
 ## 1.3.0 - 2026-06-18
 
 - Cloud sync now emits a real `collectionStatus` instead of always reporting
