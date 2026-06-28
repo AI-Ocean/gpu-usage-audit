@@ -116,17 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         "daemon",
         help="Real NVML sampling into SQLite (long-running, NVIDIA host required)",
     )
-    p_daemon.add_argument(
-        "--db",
-        default=str(DEFAULT_DB_PATH),
-        help=f"Path to SQLite database file [default: {DEFAULT_DB_PATH}]",
-    )
-    p_daemon.add_argument(
-        "--interval",
-        type=_duration,
-        default=timedelta(seconds=30),
-        help="Tick interval (e.g. 30s, 1m, 200ms) [default: 30s]",
-    )
+    _add_daemon_args(p_daemon)
     _add_cloud_args(p_daemon)
     p_daemon.set_defaults(func=_cmd_daemon)
 
@@ -134,55 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
         "report",
         help="Print §1–§5 retrospective report from an accumulated database",
     )
-    p_report.add_argument(
-        "--db",
-        default=str(DEFAULT_DB_PATH),
-        help=f"Path to SQLite database file [default: {DEFAULT_DB_PATH}]",
-    )
-    p_report.add_argument(
-        "--since",
-        type=_duration,
-        default=timedelta(hours=1),
-        help="Report window (e.g. 1h, 24h, 5m) [default: 1h]",
-    )
-    p_report.add_argument(
-        "--interval",
-        type=_duration,
-        default=None,
-        help=(
-            "Override recorded daemon interval for §2 Idle capacity / §4 time conversion "
-            "[default: read from DB; legacy rows fall back to 30s]"
-        ),
-    )
-    p_report.add_argument(
-        "--width",
-        type=int,
-        default=60,
-        help="Width of the headline bar [default: 60]",
-    )
+    _add_report_args(p_report)
     p_report.set_defaults(func=_cmd_report)
 
     p_demo = sub.add_parser(
         "demo",
         help="Run a self-contained demo with fake telemetry (no GPU required)",
     )
-    p_demo.add_argument(
-        "--db",
-        default=None,
-        help="SQLite database path [default: a fresh temporary file]",
-    )
-    p_demo.add_argument(
-        "--ticks",
-        type=int,
-        default=30,
-        help="Number of fake ticks to record before printing the report [default: 30]",
-    )
-    p_demo.add_argument(
-        "--interval",
-        type=_duration,
-        default=timedelta(seconds=1),
-        help="Tick interval for the fake daemon [default: 1s]",
-    )
+    _add_demo_args(p_demo)
     p_demo.set_defaults(func=_cmd_demo)
 
     sub.add_parser("version", help="Print version")
@@ -950,11 +899,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point. argv=None 이면 sys.argv 사용."""
-    _configure_logging()
-
-    parser = build_parser()
+def _dispatch(parser: argparse.ArgumentParser, argv: list[str] | None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "version":
@@ -969,26 +914,18 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help(sys.stderr)
     return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point. argv=None 이면 sys.argv 사용."""
+    _configure_logging()
+    return _dispatch(build_parser(), argv)
 
 
 def gua_main(argv: list[str] | None = None) -> int:
     """새 `gua` command surface entry point."""
     _configure_logging()
-    parser = build_gua_parser()
-    args = parser.parse_args(argv)
-
-    if args.command == "version":
-        print(__version__)
-        return 0
-    if args.command == "help":
-        parser.print_help()
-        return 0
-    if hasattr(args, "func"):
-        result: int = args.func(args)
-        return result
-
-    parser.print_help(sys.stderr)
-    return 2
+    return _dispatch(build_gua_parser(), argv)
 
 
 def _configure_logging() -> None:
