@@ -44,7 +44,7 @@ uv tool install gpu-usage-audit
 Update or remove it with:
 
 ```sh
-uv tool upgrade gpu-usage-audit
+uv tool install gpu-usage-audit@latest   # picks up a just-published release (upgrade may miss it due to index cache)
 uv tool uninstall gpu-usage-audit
 ```
 
