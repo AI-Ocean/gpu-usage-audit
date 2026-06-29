@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0 - 2026-06-29
+
+- Maintenance release — no user-facing behavior change. Internal CLI
+  cleanup: `build_parser` now reuses the shared `_add_daemon_args` /
+  `_add_report_args` / `_add_demo_args` helpers, and `main` / `gua_main`
+  share a single `_dispatch`. Removed the superseded `bare-metal-1.0`
+  planning docs.
+
 ## 1.4.0 - 2026-06-19
 
 - Cloud sync now classifies each GPU from NVML compute and graphics process
