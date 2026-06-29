@@ -11,7 +11,7 @@ from gpu_usage_audit.tier import FakeTier
 
 
 def test_sparkline_levels_and_width() -> None:
-    assert sparkline([0, 50, 100], 3) == " ▄█"  # 0→space, 50→▄(idx4), 100→█
+    assert sparkline([0, 50, 100], 3) == "▁▅█"  # 0→▁(바닥선), 50→▅, 100→█
     assert len(sparkline([50, 50], 10)) == 10  # 폭만큼 우측정렬 패딩
     assert sparkline([100], 5).endswith("█")
 
@@ -21,10 +21,11 @@ def test_render_top_shows_name_util_and_process() -> None:
     buf.append_all(FakeTier().collect_util(0.0))  # phase0: GPU-0 util 80
     snapshot = FakeTier().collect(datetime.now(UTC))  # 첫 collect: GPU-0 alice 프로세스
     out = render_top(buf, snapshot)
+    assert "GPU0" in out  # GPU 인덱스 구분
     assert "NVIDIA RTX A6000" in out
     assert "util  80%" in out
     assert "[" in out and "]" in out  # 스파크라인
-    assert "alice" in out  # GPU-0 프로세스
+    assert "alice" in out  # GPU-0 프로세스(컴퓨트)
 
 
 def test_render_top_without_snapshot_still_renders_util() -> None:

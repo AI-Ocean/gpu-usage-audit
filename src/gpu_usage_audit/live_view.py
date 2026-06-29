@@ -16,29 +16,36 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TextIO
 
+from .daemon import resolve_proc_identities
+from .identity import system_process_name_lookup, system_user_lookup
 from .live_buffer import LiveUtilBuffer
 from .model import ProcSample, Snapshot
 from .tier import Tier
 
-# 0(빈칸)~8(꽉찬블록) 9단계. util 0-100 을 이 인덱스로 매핑.
-_LEVELS = " ▁▂▃▄▅▆▇█"
+# 8단계 블록. 공백을 빼서 0% 도 ▁(바닥선)으로 보이게 — "데이터 없음"(빈칸)과 구분.
+_LEVELS = "▁▂▃▄▅▆▇█"
 _CLEAR = "\033[H\033[2J"  # 커서 홈 + 화면 지움 (프레임마다 재출력)
 
 
 def sparkline(values: list[int], width: int) -> str:
-    """util%(0-100) 리스트의 최근 `width`개를 유니코드 블록 스파크라인으로."""
+    """util%(0-100) 리스트의 최근 `width`개를 유니코드 블록 스파크라인으로(0%=▁ 바닥선)."""
     recent = values[-width:]
     cells = []
     for v in recent:
-        idx = max(0, min(8, round(max(0, min(100, v)) / 100 * 8)))
+        idx = max(0, min(7, round(max(0, min(100, v)) / 100 * 7)))
         cells.append(_LEVELS[idx])
     return "".join(cells).rjust(width)
 
 
 def _procs_for(snapshot: Snapshot | None, uuid: str) -> list[ProcSample]:
+    """이 GPU 의 컴퓨트 프로세스(메모리 점유)만 — Xorg/gnome-shell 등 그래픽 노이즈 제외."""
     if snapshot is None:
         return []
-    procs = [p for p in snapshot.procs if p.gpu_uuid == uuid and (p.mem_used_mb or 0) > 0]
+    procs = [
+        p
+        for p in snapshot.procs
+        if p.gpu_uuid == uuid and p.process_type == "compute" and (p.mem_used_mb or 0) > 0
+    ]
     return sorted(procs, key=lambda p: p.mem_used_mb or 0, reverse=True)
 
 
@@ -54,11 +61,14 @@ def render_top(
     """
     names: dict[str, str] = {}
     totals: dict[str, int] = {}
+    indices: dict[str, int] = {}
     order: list[str] = []
     if snapshot is not None:
         for g in snapshot.gpus:
             names[g.uuid] = g.name or g.uuid
             totals[g.uuid] = g.memory_total_mb or 0
+            if g.index is not None:
+                indices[g.uuid] = g.index
             order.append(g.uuid)
     for uuid in buffer.uuids():
         if uuid not in order:
@@ -72,8 +82,10 @@ def render_top(
         used = latest.mem_used_mb if latest else 0
         total = totals.get(uuid, 0)
         name = names.get(uuid, uuid)
+        idx = indices.get(uuid)
+        gid = f"GPU{idx}" if idx is not None else uuid[:12]
         mem = f"{used}/{total}MB" if total else f"{used}MB"
-        lines.append(f"{name}  util {util:3d}%  mem {mem}")
+        lines.append(f"{gid:<6} {name}  util {util:3d}%  mem {mem}")
         lines.append(f"  [{sparkline([s.util_pct for s in samples], spark_width)}]")
         for p in _procs_for(snapshot, uuid):
             user = p.loginuid_user or "?"
@@ -109,6 +121,8 @@ def run_top(
         buffer.append_all(tier.collect_util(ts))
         if ts >= next_snapshot:
             snapshot = tier.collect(datetime.now(UTC))
+            # PID → 사용자명/프로세스명 해석(데몬과 동일). 미해결만 채움.
+            resolve_proc_identities(snapshot.procs, system_user_lookup, system_process_name_lookup)
             next_snapshot = ts + snapshot_interval
         out.write(_CLEAR)
         out.write(render_top(buffer, snapshot, spark_width=spark_width))
