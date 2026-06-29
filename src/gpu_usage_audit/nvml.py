@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from .model import GPUSample, ProcessType, ProcSample, Snapshot
+from .model import GPUSample, ProcessType, ProcSample, Snapshot, UtilSample
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,30 @@ class NVMLTier:
                 self._last_compute_process_list_unavailable_uuids
             ),
         )
+
+    def collect_util(self, ts: float) -> list[UtilSample]:
+        """1초 라이브용 *가벼운* 표본 — util/mem 만. 프로세스 enumerate·온도·전력 생략.
+
+        collect() 는 매 카드마다 compute+graphics 프로세스 목록을 walk 해서 비싸다.
+        1초 루프엔 부적합 → 카드당 NVML 두 콜(util, mem)만. uuid 는 시계열 키.
+        """
+        nvml = self._nvml
+        if nvml is None or not self._initialized:
+            raise NVMLNotAvailableError("NVMLTier.collect_util called before probe()")
+        out: list[UtilSample] = []
+        for i in range(nvml.nvmlDeviceGetCount()):
+            h = nvml.nvmlDeviceGetHandleByIndex(i)
+            util = nvml.nvmlDeviceGetUtilizationRates(h)
+            mem = nvml.nvmlDeviceGetMemoryInfo(h)
+            out.append(
+                UtilSample(
+                    uuid=_decode(nvml.nvmlDeviceGetUUID(h)),
+                    ts=ts,
+                    util_pct=int(util.gpu),
+                    mem_used_mb=int(mem.used) // (1024 * 1024),
+                )
+            )
+        return out
 
     def _read_running_processes(
         self,

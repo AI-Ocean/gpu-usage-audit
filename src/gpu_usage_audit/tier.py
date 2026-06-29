@@ -13,21 +13,22 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
-from .model import GPUSample, ProcSample, Snapshot
+from .model import GPUSample, ProcSample, Snapshot, UtilSample
 
 
 class Tier(Protocol):
-    """Tier 인터페이스. 두 메서드만:
+    """Tier 인터페이스. 세 메서드:
 
     probe: 데몬 시작 시 한 번 호출. 드라이버 버전 등 *변하지 않는 메타* 를
         받는 용도. 진짜 NVML 에선 nvml.SystemGetDriverVersion 호출.
-    collect: 매 틱 호출. ts 는 데몬이 캡처한 한 틱의 시각 (실제 NVML 은
-        ts 를 안 쓰지만, FakeTier 같은 구현이 시간을 참조할 수 있게 인자
-        그대로 받음).
+    collect: 무거운 틱 — gpus + 프로세스 enumerate + 온도/전력. 스냅샷 cadence(느림).
+    collect_util: *가벼운* 1초 util/mem 표본 — 프로세스 enumerate 없음. 라이브 그래프용.
+        ts 는 epoch seconds (보드 ws 와이어가 float).
     """
 
     def probe(self) -> str: ...
     def collect(self, ts: datetime) -> Snapshot: ...
+    def collect_util(self, ts: float) -> list[UtilSample]: ...
 
 
 class FakeTier:
@@ -124,6 +125,25 @@ class FakeTier:
             ],
             procs=procs,
         )
+
+    def collect_util(self, ts: float) -> list[UtilSample]:
+        """가벼운 util 표본. `_tick`(스냅샷 phase)과 독립 — 시간(ts)으로 위상 결정.
+
+        collect() 의 5-phase util 값을 그대로 흉내내되 *상태를 안 advance* 한다.
+        그래서 데몬이 collect()(느림)와 collect_util()(1초)을 섞어 불러도 desync 없음.
+        """
+        phase = int(ts) % 5
+        if phase < 2:
+            gpu0_util, gpu0_mem = 80, 70000
+        elif phase < 4:
+            gpu0_util, gpu0_mem = 2, 70000
+        else:
+            gpu0_util, gpu0_mem = 0, 0
+        return [
+            UtilSample(uuid="GPU-0", ts=ts, util_pct=gpu0_util, mem_used_mb=gpu0_mem),
+            UtilSample(uuid="GPU-1", ts=ts, util_pct=2, mem_used_mb=8200),
+            UtilSample(uuid="GPU-2", ts=ts, util_pct=0, mem_used_mb=128),
+        ]
 
 
 def _fake_gpu(uuid: str, *, index: int, util_pct: int, used_mb: int) -> GPUSample:

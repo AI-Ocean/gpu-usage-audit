@@ -26,6 +26,7 @@ The second category is the point. A notebook can sit at 1% SM utilization while 
 - Single-host, bare-metal NVIDIA GPU audit
 - `gua doctor` readiness check for `/dev/nvidia*`, `nvidia-smi`, NVML, and DB path
 - Background collector with `gua daemon`, `gua status`, and `gua stop`
+- Live local view with `gua top` — 1s util graph + per-GPU process table, no board needed
 - SQLite history database at `~/.gua/gua.db` by default
 - Report sections for headline split, idle capacity, per-GPU state, top identities, and time-of-day heatmap
 - Daemon interval metadata stored per run, so reports compute GPU-hours correctly across mixed 30s / 10s runs
@@ -119,6 +120,7 @@ Reports can run while the daemon is writing; SQLite WAL mode handles concurrent 
 | `gua start` | Alias for `gua daemon` |
 | `gua status` | Show whether the managed background collector is running |
 | `gua stop` | Stop the managed background collector |
+| `gua top` | Live local GPU view (1s util graph + processes), no board required |
 | `gua report` | Render the retrospective report from SQLite |
 | `gua demo` | Generate a fake local report without a GPU |
 | `gua enroll` | Connect this host to a GUA Board workspace (optional cloud sync) |
@@ -130,6 +132,7 @@ Reports can run while the daemon is writing; SQLite WAL mode handles concurrent 
 ```sh
 gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
 gua daemon --foreground [--db PATH] [--interval D]
+gua top [--interval D] [--fake]
 gua report [--db PATH] [--since D] [--interval D] [--width N]
 gua demo [--db PATH] [--ticks N] [--interval D]
 ```
