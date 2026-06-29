@@ -1,6 +1,6 @@
 [project]
 name = "gpu-usage-audit"
-version = "1.5.0"
+version = "1.6.0"
 description = "Single-host daemon that surfaces 'idle-held' NVIDIA GPU memory — the embarrassing category conventional dashboards miss."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -16,7 +16,8 @@ classifiers = [
 ]
 # NVML Python binding is a default dependency for the bare-metal 1.0 UX.
 # GPU 없는 개발/CI/demo 환경에서도 import 는 가능하고, driver/NVML init 만 실패한다.
-dependencies = ["nvidia-ml-py>=12.535"]
+# websockets: 보드 라이브 util 스트림(0032-2) 용 — stdlib 에 ws 클라이언트가 없다.
+dependencies = ["nvidia-ml-py>=12.535", "websockets>=13"]
 
 [project.optional-dependencies]
 # Backward-compatible alias. NVML is now installed by default.

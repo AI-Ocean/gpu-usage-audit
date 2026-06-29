@@ -18,6 +18,21 @@ ProcessType = Literal["compute", "graphics"]
 UsageState = Literal["active", "idle_held", "idle"]
 
 
+@dataclass(frozen=True, slots=True)
+class UtilSample:
+    """라이브 1초 util 샘플 — `gua top` 로컬 버퍼와 보드 ws 스트림이 공유하는 단위.
+
+    full Snapshot(프로세스·온도·전력 enumerate 포함)과 달리 util/mem 만 담는
+    *가벼운* 표본. 같은 수집 코어가 (a) 로컬 터미널 뷰 (b) 보드 ws 송신 양쪽에 쓰인다.
+    ts 는 epoch seconds(보드 ws 와이어 포맷이 float) — 그대로 직렬화한다.
+    """
+
+    uuid: str
+    ts: float
+    util_pct: int
+    mem_used_mb: int
+
+
 @dataclass(slots=True)
 class GPUSample:
     """한 카드의 한 틱 — UUID + SM 사용률(%).

@@ -44,10 +44,12 @@ from .cloud.snapshot import (
     build_observation_payload,
     derive_collection_status,
 )
+from .cloud.ws_client import start_util_stream_thread
 from .daemon import install_signal_handlers, resolve_proc_identities, run_daemon
 from .db import open_db, write_snapshot
 from .doctor import build_doctor_report, doctor_report_to_dict, render_doctor
 from .identity import system_process_name_lookup, system_user_lookup
+from .live_view import run_top
 from .model import HostMeta, Snapshot
 from .nvml import NVMLNotAvailableError, NVMLTier
 from .paths import (
@@ -73,7 +75,7 @@ from .report import (
     load_per_gpu,
     load_top_identities,
 )
-from .tier import FakeTier
+from .tier import FakeTier, Tier
 from .usage_state import classify_usage_states
 
 _DURATION_RE = re.compile(r"^(?P<v>\d+(?:\.\d+)?)(?P<u>ms|s|m|h|d)$")
@@ -158,7 +160,10 @@ def _add_cloud_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cloud",
         action="store_true",
-        help="After each tick, push the latest snapshot to GUA Board (requires `gua enroll`)",
+        help=(
+            "Push snapshots to GUA Board and stream 1s live util over WebSocket "
+            "(requires `gua enroll`)"
+        ),
     )
     parser.add_argument(
         "--config",
@@ -308,6 +313,23 @@ def build_gua_parser() -> argparse.ArgumentParser:
     _add_demo_args(p_demo)
     p_demo.set_defaults(func=_cmd_demo)
 
+    p_top = sub.add_parser(
+        "top",
+        help="Live local GPU view (util graph + processes) — no board required",
+    )
+    p_top.add_argument(
+        "--interval",
+        type=_duration,
+        default=timedelta(seconds=1),
+        help="Refresh interval (e.g. 1s, 500ms) [default: 1s]",
+    )
+    p_top.add_argument(
+        "--fake",
+        action="store_true",
+        help="Use deterministic fake telemetry instead of NVML",
+    )
+    p_top.set_defaults(func=_cmd_gua_top)
+
     p_enroll = sub.add_parser(
         "enroll",
         help="Connect this host to a GUA Board workspace (optional cloud sync)",
@@ -383,6 +405,31 @@ def _cmd_gua_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(doctor_report_to_dict(report), indent=2, sort_keys=True))
         return 0
     print(render_doctor(report))
+    return 0
+
+
+def _cmd_gua_top(args: argparse.Namespace) -> int:
+    """로컬 라이브 GPU 뷰 — util 1초 그래프 + 프로세스. 보드/클라우드 불필요."""
+    if args.fake:
+        tier: Tier = FakeTier()
+        tier.probe()
+    else:
+        nvml_tier = NVMLTier()
+        try:
+            nvml_tier.probe()
+        except NVMLNotAvailableError as exc:
+            print(f"gua top: {exc}", file=sys.stderr)
+            nvml_tier.close()
+            return 1
+        tier = nvml_tier
+
+    stop = threading.Event()
+    install_signal_handlers(stop)
+    try:
+        run_top(tier, stop=stop, out=sys.stdout, interval=args.interval.total_seconds())
+    finally:
+        if isinstance(tier, NVMLTier):
+            tier.close()
     return 0
 
 
@@ -795,6 +842,19 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
             stop = threading.Event()
             install_signal_handlers(stop)
+
+            # cloud 면 스냅샷 HTTP push(on_tick)와 *별개로* 1초 util 을 ws 로 스트림.
+            # 같은 tier 를 두 스레드가 읽지만 NVML get* 호출은 thread-safe(읽기 전용).
+            # ws 가 안 붙어도 스냅샷 HTTP 는 계속 → 자연스러운 폴백(라이브만 빠짐).
+            util_thread = None
+            if cloud_config is not None:
+                util_thread = start_util_stream_thread(
+                    server_url=cloud_config.server_url,
+                    agent_token=cloud_config.agent_token,
+                    sample_source=tier.collect_util,
+                    stop=stop,
+                )
+
             run_daemon(
                 tier=tier,
                 db=conn,
@@ -805,6 +865,9 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 stop=stop,
                 on_tick=on_tick,
             )
+            if util_thread is not None:
+                stop.set()
+                util_thread.join(timeout=5.0)
             total = conn.execute("SELECT COUNT(*) FROM gpu_sample").fetchone()[0]
             print(f"\n{args.db}: {total} total gpu_sample rows")
             return 0
