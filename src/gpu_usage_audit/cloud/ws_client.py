@@ -94,9 +94,7 @@ def stream_util(
         except _STREAM_ERRORS as exc:
             if stop.is_set():
                 return
-            logger.warning(
-                "util ws stream lost (%s); reconnecting in %.0fs", exc, backoff
-            )
+            logger.warning("util ws stream lost (%s); reconnecting in %.0fs", exc, backoff)
             if stop.wait(backoff):
                 return
             backoff = min(backoff * 2, max_backoff)

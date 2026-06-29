@@ -57,7 +57,11 @@ class _FakeWs:
         if self._fail_at is not None and self._n == self._fail_at:
             raise ConnectionResetError("simulated drop")
         self._sent.append(message)
-        if self._stop is not None and self._stop_after is not None and len(self._sent) >= self._stop_after:
+        if (
+            self._stop is not None
+            and self._stop_after is not None
+            and len(self._sent) >= self._stop_after
+        ):
             self._stop.set()  # send 기준 종료 → 다음 stop.wait 에서 빠져나감
 
 
