@@ -15,18 +15,31 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, Protocol
-
-from websockets.exceptions import WebSocketException
-from websockets.sync.client import connect as _ws_connect
+from typing import Any, Protocol, cast
 
 from ..model import UtilSample
 from .config import normalize_server_url
 
 logger = logging.getLogger(__name__)
 
-# 끊겨도 무한 재시도하지만, 송신/연결 에러는 이 둘로 좁혀 잡는다(BLE 회피).
-_STREAM_ERRORS = (OSError, WebSocketException)
+
+# websockets 는 *lazy* import — 클라우드 스트림을 실제로 켤 때만 필요하다(pynvml 과 동일
+# 패턴). 그래야 `gua doctor`/`top`/`report` 등 비클라우드 명령이 websockets 없이도 동작하고,
+# deps 없이 휠을 import 해도 CLI 가 깨지지 않는다(릴리스 스모크).
+def _default_connect(uri: str, *, additional_headers: dict[str, str]) -> WsConnection:
+    from websockets.sync.client import connect
+
+    # ClientConnection 은 send + 컨텍스트매니저를 구조적으로 만족 — Protocol 로 cast.
+    return cast("WsConnection", connect(uri, additional_headers=additional_headers))
+
+
+def _stream_errors() -> tuple[type[BaseException], ...]:
+    """재연결 시 좁혀 잡을 예외(BLE 회피). websockets 있으면 그 base 포함, 없으면 OSError 만."""
+    try:
+        from websockets.exceptions import WebSocketException
+    except ImportError:
+        return (OSError,)
+    return (OSError, WebSocketException)
 
 
 class WsConnection(Protocol):
@@ -77,7 +90,8 @@ def stream_util(
     별도 스레드에서 돌도록 설계(데몬 스냅샷 루프와 동시). `connect`/`clock`/
     `sample_source` 는 주입 가능 — GPU·실서버 없이 테스트.
     """
-    do_connect = connect or _ws_connect
+    do_connect = connect or _default_connect
+    stream_errors = _stream_errors()
     ws_url = derive_ws_url(server_url)
     headers = {"Authorization": f"Bearer {agent_token}"}
     backoff = backoff_start
@@ -91,7 +105,7 @@ def stream_util(
                     ws.send(json.dumps(util_message(ts, sample_source(ts))))
                     if stop.wait(interval):
                         return
-        except _STREAM_ERRORS as exc:
+        except stream_errors as exc:
             if stop.is_set():
                 return
             logger.warning("util ws stream lost (%s); reconnecting in %.0fs", exc, backoff)
