@@ -11,15 +11,21 @@ Single-host NVIDIA GPU usage audit for finding **idle-held** GPUs: cards that lo
 
 ---
 
+![gua top — live local GPU view](https://raw.githubusercontent.com/AI-Ocean/gpu-usage-audit/main/docs/img/gua-top.png)
+
+*`gua top` — a live local view, no board or web UI required. GPU0 is genuinely busy; GPU1 sits at 3% utilization while still holding 8.2 GB (**idle-held**); GPU2 is truly free.*
+
 ## About
 
-gpu-usage-audit records local NVIDIA/NVML telemetry into SQLite and renders a retrospective report that separates GPU card-ticks into:
+gpu-usage-audit watches local NVIDIA/NVML telemetry and answers one question other dashboards skip: **is this GPU actually free, or just sitting idle while holding memory?** It separates every GPU card-tick into:
 
 - `active`: utilization is doing real work
 - `idle-held`: utilization is low, but a process still holds GPU memory
 - `truly-idle`: no meaningful GPU process memory is present
 
 The second category is the point. A notebook can sit at 1% SM utilization while keeping an 8 GB tensor allocated. Conventional dashboards usually flatten that into “idle”; this tool shows that the card is effectively unavailable.
+
+Two ways to see it: **live** with `gua top` (1s utilization graph + per-GPU process table, right in your terminal), and **retrospective** with `gua report` (records into SQLite, then splits the window into the three states above with idle-capacity in GPU-hours). For a shared lab across several hosts, the optional [GUA Board](#cloud-sync-gua-board-optional) folds the same telemetry into one web view.
 
 ## Features
 
@@ -31,7 +37,8 @@ The second category is the point. A notebook can sit at 1% SM utilization while 
 - Report sections for headline split, idle capacity, per-GPU state, top identities, and time-of-day heatmap
 - Daemon interval metadata stored per run, so reports compute GPU-hours correctly across mixed 30s / 10s runs
 - GPU-less `gua demo` command with deterministic fake telemetry
-- No cluster runtime dependency; no Kubernetes, Slurm, Docker, or remote-node scan in the 1.0 scope
+- Optional cloud sync to [GUA Board](#cloud-sync-gua-board-optional): the same 1s util stream, surfaced across many hosts in one web view
+- No cluster runtime dependency; no Kubernetes, Slurm, Docker, or remote-node scan
 
 ## Installation
 
@@ -48,11 +55,11 @@ uv tool install gpu-usage-audit@latest   # picks up a just-published release (up
 uv tool uninstall gpu-usage-audit
 ```
 
-Manual wheel downloads are available from GitHub Releases:
+Manual wheel downloads are available from GitHub Releases (swap in the [latest tag](https://github.com/AI-Ocean/gpu-usage-audit/releases)):
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.0.3"
-WHEEL="gpu_usage_audit-1.0.3-py3-none-any.whl"
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.6.1"
+WHEEL="gpu_usage_audit-1.6.1-py3-none-any.whl"
 
 curl -fsSLO "$BASE/$WHEEL"
 curl -fsSLO "$BASE/SHA256SUMS"
@@ -74,6 +81,13 @@ gua stop
 ```
 
 `gua doctor` is read-only. It does not need `sudo`; run it as the same user that will run the daemon.
+
+For a live look without the daemon or a report, just run `gua top` (press `q` or Ctrl-C to quit):
+
+```sh
+gua top            # 1s util graph + per-GPU process table
+gua top --fake     # try it on a machine with no GPU
+```
 
 Default local state lives under `~/.gua/`:
 
@@ -116,7 +130,7 @@ Reports can run while the daemon is writing; SQLite WAL mode handles concurrent 
 | Command | Description |
 | --- | --- |
 | `gua doctor` | Check local NVIDIA/NVML readiness and DB path status |
-| `gua daemon` | Start background collection on the local NVIDIA host |
+| `gua daemon` | Start background collection on the local NVIDIA host (`--cloud` also streams to GUA Board) |
 | `gua start` | Alias for `gua daemon` |
 | `gua status` | Show whether the managed background collector is running |
 | `gua stop` | Stop the managed background collector |
@@ -131,6 +145,7 @@ Reports can run while the daemon is writing; SQLite WAL mode handles concurrent 
 
 ```sh
 gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
+gua daemon --cloud [--config PATH]        # also stream to GUA Board (after `gua enroll`)
 gua daemon --foreground [--db PATH] [--interval D]
 gua top [--interval D] [--fake]
 gua report [--db PATH] [--since D] [--interval D] [--width N]
@@ -175,23 +190,30 @@ systemctl enable --now gpu-usage-audit
 
 ## Cloud Sync (GUA Board, optional)
 
-`gpu-usage-audit` runs fully local by default. If you also use GUA Board (a separate service that shows the latest GPU availability across several servers in one place), you can optionally connect a host:
+`gpu-usage-audit` runs fully local by default. **GUA Board** is a separate service that folds the same telemetry from many hosts into one web view — live utilization graphs next to a reservation timeline, so a shared lab can see at a glance which GPUs are genuinely free, which are reserved, and which are *reserved but sitting idle*.
+
+![GUA Board — live availability across hosts](https://raw.githubusercontent.com/AI-Ocean/gpu-usage-audit/main/docs/img/board.png)
+
+Connect a host in three steps:
 
 ```sh
 # 1. In the GUA Board web UI, register a server and copy the one-time enrollment token.
 # 2. On the GPU host:
 gua enroll --server-url https://board.example.com --enrollment-token <TOKEN>
-# 3. Push the current snapshot (run on a timer or after `gua daemon`):
+# 3a. Live: run the daemon in cloud mode — pushes snapshots and streams 1s util over WebSocket:
+gua daemon --cloud
+# 3b. Or one-shot: collect a single snapshot and push the latest state (run on a timer):
 gua sync-once
 ```
 
 How it works and what it does not do:
 
 - `enroll` exchanges the one-time token for a host-scoped, write-only agent token, stored in `~/.gua/cloud.json` with mode `0600`. The token can only write this host's observations — it cannot read reservations, users, or other hosts.
+- `daemon --cloud` keeps writing local history as usual, and additionally streams the 1s util samples to the board (so the board's graphs scroll live) and pushes periodic snapshots. The board buffers util in memory only; it stores no per-second history.
 - `sync-once` collects one snapshot, **writes it to the local database first**, then pushes only the latest state. A failed push never blocks or rolls back the local write.
-- Only the latest snapshot is sent. Historical ticks are kept locally and are never replayed to the server.
+- Only the latest state is sent. Historical ticks are kept locally and are never replayed to the server.
 - Process telemetry is limited to PID, Linux user, process name (`/proc/<pid>/comm`), and GPU memory — never full command lines.
-- Cloud sync adds no new runtime dependency (the client uses the Python standard library).
+- The agent only pushes outward. There is no tunnel, no pull, and no remote command execution — the board cannot reach into a host.
 
 Override the config or database path with `--config PATH` / `--db PATH`, and use `gua sync-once --fake` to exercise the flow without a GPU.
 
@@ -224,7 +246,7 @@ CI runs ruff, format check, mypy, pytest, build, and wheel smoke tests. Tag push
 
 ## Non-goals
 
-This is a single-host retrospective tool. Live dashboards, multi-host aggregation, quotas, Kubernetes cluster scans, Slurm joins, Docker/Podman runtime fallback, and pod-name resolution are outside the bare-metal 1.0 scope.
+This is a single-host tool — live (`gua top`) and retrospective (`gua report`) views of the GPUs on the machine it runs on. It does not integrate with cluster schedulers: no Kubernetes cluster scans, Slurm joins, quotas, Docker/Podman runtime fallback, or pod-name resolution. The agent never scans or reaches other hosts. Aggregating many hosts into one live view is the job of the optional [GUA Board](#cloud-sync-gua-board-optional), which the agent only ever pushes to.
 
 The Go v0.1.0 implementation remains available at tag `v0.1.0` and branch [`go-archive`](https://github.com/AI-Ocean/gpu-usage-audit/tree/go-archive).
 
