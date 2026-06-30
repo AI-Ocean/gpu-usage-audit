@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.6.1 - 2026-06-29
+
+- `gua top` polish: show the GPU index, draw a `▁` baseline so 0% reads as a
+  floor (not a gap), and limit the process table to compute processes —
+  graphics noise like Xorg/gnome-shell no longer clutters the view.
+- Docs recommend `uv tool install gpu-usage-audit@latest` for upgrades, since
+  `uv tool upgrade` can miss a just-published release due to index caching.
+
+## 1.6.0 - 2026-06-29
+
+- New `gua top`: a live local GPU view (1s utilization sparkline + per-GPU
+  process table) right in the terminal, no board or web UI required. Runs
+  against a real GPU or with `--fake`.
+- `gua daemon --cloud` now also streams 1s utilization to GUA Board over a
+  WebSocket, so the board's graphs scroll live; periodic snapshots still go
+  over HTTP. The board buffers util in memory only and stores no per-second
+  history.
+- Adds a `websockets` runtime dependency for the cloud live stream. It is
+  imported lazily, so the fully local CLI (`top`, `daemon`, `report`, `demo`)
+  still works if `websockets` is absent.
+
 ## 1.5.0 - 2026-06-29
 
 - Maintenance release — no user-facing behavior change. Internal CLI
