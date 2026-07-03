@@ -344,6 +344,9 @@ MEM_FLOOR_MB = 100  # 프로세스 메모리>이면 "점유" — framework 잔�
 # ponytail: 이보다 오래 같은 pid 가 안 보이면 별개 세션으로 끊는다. 30~60s
 # 샘플의 2~3틱 결손을 흡수하고, 진짜로 죽었다 재시작한 건 나눈다.
 SESSION_GAP = timedelta(seconds=180)
+# 세션 끝이 최신 tick 에서 이 안쪽이면 "아직 진행 중"으로 본다(현재 점유).
+# 최신 tick 은 report 시점보다 최대 한 interval 뒤라, 넉넉히 120초.
+LIVE_SLACK = timedelta(seconds=120)
 
 
 @dataclass(slots=True)
@@ -415,10 +418,13 @@ def load_sessions(
             "SELECT gpu_uuid, ts, util_pct FROM gpu_sample WHERE ts >= ?", (since,)
         )
     }
+    # compute 프로세스만 — Xorg/gnome-shell 등 graphics 는 디스플레이 서버라
+    # GPU 연산 낭비와 무관하니 세션·점유 판정에서 통째로 제외한다.
     rows = conn.execute(
         "SELECT gpu_uuid, gpu_index, pid, COALESCE(loginuid_user, owner_user), "
         "loginuid_user, process_name, process_type, mem_used_mb, ts "
-        "FROM proc_sample WHERE ts >= ? ORDER BY gpu_uuid, pid, ts",
+        "FROM proc_sample WHERE ts >= ? AND process_type = 'compute' "
+        "ORDER BY gpu_uuid, pid, ts",
         (since,),
     ).fetchall()
 
@@ -443,59 +449,66 @@ def load_sessions(
 
 @dataclass(slots=True)
 class GpuStatus:
-    """카드 한 장의 관측 구간 요약 — 전체 GPU 표 한 줄."""
+    """카드 한 장의 *현재*(가장 최근 tick) 상태 — 전체 GPU 표 한 줄.
+
+    창 전체 집계가 아니라 최신 스냅샷이라 nvidia-smi 와 일치한다: 며칠 전
+    잡혔다 풀린 카드가 "지금 점유 중"으로 오인되지 않게.
+    """
 
     gpu_index: int | None
     gpu_uuid: str
     state: str  # 'in_use' | 'idle_held' | 'empty'
-    avg_util: float
-    peak_mem_mb: int
-    owner: str | None  # 최장 점유 세션의 소유자
+    util: int  # 현재 util
+    mem_mb: int  # 현재 사용 메모리
+    owner: str | None  # 현재 최대 메모리 compute 프로세스의 소유자
     process_name: str | None
 
 
-def load_gpu_status(
-    conn: sqlite3.Connection, cutoff: datetime, sessions: list[Session]
-) -> list[GpuStatus]:
-    """카드별 avg util / peak mem / 상태 + 최장 점유 세션의 소유·프로세스."""
-    per_gpu = {pg.uuid: pg for pg in load_per_gpu(conn, cutoff)}
-    metrics = {
-        u: (avg or 0.0, peak or 0)
-        for u, avg, peak in conn.execute(
-            "SELECT gpu_uuid, AVG(util_pct), MAX(COALESCE(memory_used_mb, 0)) "
-            "FROM gpu_sample WHERE ts >= ? GROUP BY gpu_uuid",
-            (_ts(cutoff),),
-        )
-    }
-    idx_map = _gpu_index_map(conn, cutoff)
+def _latest_ts(conn: sqlite3.Connection, cutoff: datetime) -> str | None:
+    row = conn.execute("SELECT MAX(ts) FROM gpu_sample WHERE ts >= ?", (_ts(cutoff),)).fetchone()
+    return row[0] if row and row[0] is not None else None
 
-    # 카드별 최장 세션(어떤 type이든) → 대표 소유자/프로세스.
-    top: dict[str, Session] = {}
-    for s in sessions:
-        cur = top.get(s.gpu_uuid)
-        if cur is None or s.duration_h > cur.duration_h:
-            top[s.gpu_uuid] = s
 
-    eps = 1e-9
+def load_current_status(conn: sqlite3.Connection, cutoff: datetime) -> list[GpuStatus]:
+    """가장 최근 tick 기준 카드별 현재 상태. compute 프로세스만 소유자로 본다."""
+    latest = _latest_ts(conn, cutoff)
+    if latest is None:
+        return []
+
+    # 카드별 현재 최대 메모리 compute 프로세스.
+    procs: dict[str, tuple[str | None, str | None, int]] = {}
+    for uuid, owner, name, mem in conn.execute(
+        "SELECT gpu_uuid, COALESCE(loginuid_user, owner_user), process_name, "
+        "COALESCE(mem_used_mb, 0) FROM proc_sample "
+        "WHERE ts = ? AND process_type = 'compute'",
+        (latest,),
+    ):
+        prev = procs.get(uuid)
+        if prev is None or mem > prev[2]:
+            procs[uuid] = (owner, name, mem)
+
     out: list[GpuStatus] = []
-    for uuid, pg in per_gpu.items():
-        if pg.active > eps:
+    for uuid, idx, util, mem in conn.execute(
+        "SELECT gpu_uuid, gpu_index, util_pct, COALESCE(memory_used_mb, 0) "
+        "FROM gpu_sample WHERE ts = ?",
+        (latest,),
+    ):
+        p = procs.get(uuid)
+        if util >= ACTIVE_UTIL:
             state = "in_use"
-        elif pg.idle_held > eps:
+        elif p is not None and p[2] > MEM_FLOOR_MB:
             state = "idle_held"
         else:
             state = "empty"
-        avg_util, peak_mem = metrics.get(uuid, (0.0, 0))
-        rep = top.get(uuid)
         out.append(
             GpuStatus(
-                gpu_index=idx_map.get(uuid),
+                gpu_index=idx,
                 gpu_uuid=uuid,
                 state=state,
-                avg_util=avg_util,
-                peak_mem_mb=peak_mem,
-                owner=rep.owner if rep else None,
-                process_name=rep.process_name if rep else None,
+                util=util,
+                mem_mb=mem,
+                owner=p[0] if p else None,
+                process_name=p[1] if p else None,
             )
         )
     out.sort(key=lambda g: (g.gpu_index is None, g.gpu_index if g.gpu_index is not None else 0))
@@ -515,9 +528,10 @@ class ActionReport:
     truly_idle: float  # 완전유휴 비율
     idle_equiv: float  # 평균 몇 장이 (실가동 안 하고) 놀았나
     held_gpu_hours: float  # 잡고도 안 쓴(idle-held) GPU-시간
-    actions: list[Session]  # 조치 대상: idle-held compute 세션 (지속시간 desc)
-    gpus: list[GpuStatus]  # 전체 GPU 상태 (index 순)
-    free_cards: list[tuple[int | None, str]]  # (gpu_index, uuid) — 내내 빈 카드
+    current_actions: list[Session]  # 지금 잡고 안 쓰는 카드 (진행 중, kill 가능)
+    past_waste: list[Session]  # 기간 중 발생했다 종료된 유휴점유 (회고·귀속)
+    gpus: list[GpuStatus]  # 전체 GPU 현재 상태 (index 순)
+    free_cards: list[tuple[int | None, str]]  # 현재 빈 카드 (gpu_index, uuid)
 
 
 def _interval_label(conn: sqlite3.Connection) -> str:
@@ -552,20 +566,26 @@ def build_action_report(
     idle_cap = load_idle_capacity(conn, cutoff, interval)
     headline = load_headline(conn, cutoff)
     sessions = load_sessions(conn, cutoff)
-    gpus = load_gpu_status(conn, cutoff, sessions)
+    gpus = load_current_status(conn, cutoff)
     total = conn.execute(
         "SELECT COUNT(*) FROM gpu_sample WHERE ts >= ?", (_ts(cutoff),)
     ).fetchone()[0]
 
-    # 조치 대상: compute 프로세스가 카드를 잡았으나 거의 안 쓴 세션.
-    actions = [
-        s
-        for s in sessions
-        if s.process_type == "compute" and s.avg_util < ACTIVE_UTIL and s.peak_mem_mb > MEM_FLOOR_MB
-    ]
-    actions.sort(key=lambda s: s.duration_h, reverse=True)
+    # idle-held: 카드를 잡았으나 거의 안 쓴 세션 (load_sessions 는 이미 compute 전용).
+    held = [s for s in sessions if s.avg_util < ACTIVE_UTIL and s.peak_mem_mb > MEM_FLOOR_MB]
 
-    # 내내 빈 카드: 관측 구간에서 실가동/유휴점유가 전혀 없던 카드.
+    # 진행 중(현재 점유) vs 종료(회고). 세션 끝이 최신 tick 근처면 아직 잡고 있는 것.
+    latest = _latest_ts(conn, cutoff)
+    latest_dt = datetime.fromisoformat(latest) if latest else now
+    live_cutoff = latest_dt - LIVE_SLACK
+    current = sorted(
+        (s for s in held if s.end >= live_cutoff), key=lambda s: s.duration_h, reverse=True
+    )
+    past = sorted(
+        (s for s in held if s.end < live_cutoff), key=lambda s: s.duration_h, reverse=True
+    )
+
+    # 현재 빈 카드 (최신 스냅샷 기준).
     free = [(g.gpu_index, g.gpu_uuid) for g in gpus if g.state == "empty"]
 
     return ActionReport(
@@ -580,7 +600,8 @@ def build_action_report(
         truly_idle=headline.truly_idle,
         idle_equiv=idle_cap.truly_idle_equiv_gpus + idle_cap.idle_held_equiv_gpus,
         held_gpu_hours=idle_cap.idle_held_gpu_hours,
-        actions=actions,
+        current_actions=current,
+        past_waste=past,
         gpus=gpus,
         free_cards=free,
     )

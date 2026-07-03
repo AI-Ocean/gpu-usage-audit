@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.2 - 2026-07-03
+
+- Fix a misleading `gua report`: a card held days ago and since released was
+  shown under **조치 필요** with a `kill` hint for an already-dead PID. Now
+  **조치 필요** lists only cards held *right now* (kill is valid), ended
+  occupancy moves to a new **기간 중 낭비 이력** section (retrospective, no
+  kill), and **전체 GPU 상태** reflects the latest tick — so it matches
+  `nvidia-smi` instead of the window aggregate.
+- Ignore graphics processes (Xorg / gnome-shell) entirely. A compute-waste
+  report shouldn't treat the display server as GPU usage, so `process_type =
+  'graphics'` is excluded from sessions, occupancy, ownership, and the
+  per-card table.
+
 ## 1.7.1 - 2026-07-03
 
 - `gua report` gets a proper report layout instead of three terse blocks: a

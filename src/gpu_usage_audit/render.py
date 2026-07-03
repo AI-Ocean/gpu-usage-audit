@@ -163,6 +163,7 @@ def render_heatmap(w: TextIO, cells: list[HeatmapCell]) -> None:
 # 셀 폭을 2로 세어 정렬을 맞춘다(east_asian_width W/F).
 WIDTH = 74
 RULE = "─" * WIDTH
+_PAST_LIMIT = 8  # 낭비 이력 표에 보여줄 최대 행 (초과분은 "… 외 N건")
 _STATE_KO = {"in_use": "사용중", "idle_held": "유휴점유", "empty": "비어있음"}
 
 
@@ -290,44 +291,40 @@ def render_action_report(w: TextIO, rep: ActionReport) -> None:
         f"잡고도 안 쓴 시간 ≈ {rep.held_gpu_hours:.0f} GPU-시간.",
         file=w,
     )
-    print(f"  조치 필요 {len(rep.actions)}건   ·   즉시 가용 {len(rep.free_cards)}장", file=w)
+    print(
+        f"  현재 점유 {len(rep.current_actions)}건   ·   "
+        f"기간 중 낭비 {len(rep.past_waste)}건   ·   현재 가용 {len(rep.free_cards)}장",
+        file=w,
+    )
     print(file=w)
 
-    # 조치 필요 표 + 카드별 상세/행동
-    print(f"■ 조치 필요 — 프로세스가 잡고도 안 쓰는 카드 ({len(rep.actions)}건)", file=w)
+    # 조치 필요 — 지금 잡고 안 쓰는 카드 (현재 점유 중, kill 가능)
+    print(f"■ 조치 필요 — 지금 잡고 안 쓰는 카드 ({len(rep.current_actions)}건)", file=w)
     print(file=w)
-    if not rep.actions:
-        print("  없음 — 점유된 카드가 모두 실사용 중이거나 비어 있습니다.", file=w)
+    if not rep.current_actions:
+        print("  현재 잡고 안 쓰는 카드 없음.", file=w)
     else:
-        rows = [
-            [
-                _gpu_num(s.gpu_index, s.gpu_uuid),
-                s.owner,
-                f"{s.process_name} ({s.pid})",
-                f"{s.duration_h:.1f}h",
-                f"{s.avg_util:.0f}%",
-                f"{s.peak_mem_mb:,}MB",
-            ]
-            for s in rep.actions
-        ]
         _table(
             w,
-            ["GPU", "소유자", "프로세스 (PID)", "지속", "평균util", "최대mem"],
-            rows,
+            ["GPU", "소유자", "프로세스 (PID)", "점유", "평균util", "최대mem"],
+            [
+                [
+                    _gpu_num(s.gpu_index, s.gpu_uuid),
+                    s.owner,
+                    f"{s.process_name} ({s.pid})",
+                    f"{s.duration_h:.1f}h",
+                    f"{s.avg_util:.0f}%",
+                    f"{s.peak_mem_mb:,}MB",
+                ]
+                for s in rep.current_actions
+            ],
             ["l", "l", "l", "r", "r", "r"],
         )
         print(file=w)
-        for s in rep.actions:
-            flags = []
-            if not s.has_login:
-                flags.append("로그인 세션 밖(시스템·컨테이너 가능)")
-            if s.shared:
-                flags.append("공유카드")
-            flag_s = ("  ·  " + " · ".join(flags)) if flags else ""
+        for s in rep.current_actions:
+            note = "" if s.has_login else "  ·  로그인 세션 밖(시스템·컨테이너 가능)"
             idx = s.gpu_index if s.gpu_index is not None else "?"
-            print(
-                f"  {_gpu_label(s.gpu_index, s.gpu_uuid)}  ·  {_span(s, rep.now)}{flag_s}", file=w
-            )
+            print(f"  {_gpu_label(s.gpu_index, s.gpu_uuid)}  ·  {_span(s, rep.now)}{note}", file=w)
             if s.has_login:
                 print(
                     f"    ↳ 확인 후 회수:  ssh {host} 'nvidia-smi -i {idx}'  →  kill {s.pid}",
@@ -341,36 +338,64 @@ def render_action_report(w: TextIO, rep: ActionReport) -> None:
                 )
     print(file=w)
 
-    # 전체 GPU 상태 표
-    print(f"■ 전체 GPU 상태 ({rep.gpu_count}장)", file=w)
+    # 기간 중 낭비 이력 — 종료된 유휴점유 (회고·귀속, kill 대상 아님)
+    if rep.past_waste:
+        shown = rep.past_waste[:_PAST_LIMIT]
+        extra = len(rep.past_waste) - len(shown)
+        print(f"■ 기간 중 낭비 이력 — 이미 종료됨 ({len(rep.past_waste)}건)", file=w)
+        print(file=w)
+        _table(
+            w,
+            ["GPU", "소유자", "프로세스", "점유 기간", "지속", "평균util"],
+            [
+                [
+                    _gpu_num(s.gpu_index, s.gpu_uuid),
+                    s.owner,
+                    s.process_name,
+                    f"{s.start:%m-%d %H:%M}→{s.end:%m-%d %H:%M}",
+                    f"{s.duration_h:.1f}h",
+                    f"{s.avg_util:.0f}%",
+                ]
+                for s in shown
+            ],
+            ["l", "l", "l", "l", "r", "r"],
+        )
+        if extra:
+            print(f"  … 외 {extra}건", file=w)
+        print(file=w)
+
+    # 전체 GPU 상태 — 현재(최신 tick) 스냅샷
+    print(f"■ 전체 GPU 상태 — 현재 ({rep.gpu_count}장)", file=w)
     print(file=w)
-    rows = [
-        [
-            _gpu_num(g.gpu_index, g.gpu_uuid),
-            _STATE_KO.get(g.state, g.state),
-            f"{g.avg_util:.0f}%",
-            f"{g.peak_mem_mb:,}MB",
-            g.owner or "—",
-            g.process_name or "—",
-        ]
-        for g in rep.gpus
-    ]
     _table(
         w,
-        ["GPU", "상태", "평균util", "최대mem", "소유자", "프로세스"],
-        rows,
+        ["GPU", "상태", "util", "메모리", "소유자", "프로세스"],
+        [
+            [
+                _gpu_num(g.gpu_index, g.gpu_uuid),
+                _STATE_KO.get(g.state, g.state),
+                f"{g.util}%",
+                f"{g.mem_mb:,}MB",
+                g.owner or "—",
+                g.process_name or "—",
+            ]
+            for g in rep.gpus
+        ],
         ["l", "l", "r", "r", "l", "l"],
     )
     print(file=w)
 
     if rep.free_cards:
         labels = " ".join(_gpu_num(i, uuid) for i, uuid in rep.free_cards)
-        print(f"즉시 가용 ({len(rep.free_cards)}장):  {labels}   →  바로 배정 가능", file=w)
+        print(f"현재 가용 ({len(rep.free_cards)}장):  {labels}   →  바로 배정 가능", file=w)
         print(file=w)
 
     # 방법론 푸터
     print(RULE, file=w)
+    print("  조치필요=현재 점유 중 · 낭비이력=기간 중 발생했다 종료 · 전체 상태=최신 tick", file=w)
     print("  상태   실가동 util≥10% · 유휴점유 util<10%+메모리>100MB · 완전유휴 그 외", file=w)
-    print("  util   NVML GPU 단위 값(카드 공유 시 특정 프로세스 귀속 불가)", file=w)
-    print("  소유   로그인 사용자 우선, 없으면 프로세스 실 UID(컨테이너면 unknown)", file=w)
+    print(
+        "  util   NVML GPU 단위 값 · graphics(Xorg 등) 제외 · 소유=로그인 우선, 없으면 실 UID",
+        file=w,
+    )
     print(f"  생성   {rep.now:%Y-%m-%d %H:%M} UTC · gua {__version__}", file=w)

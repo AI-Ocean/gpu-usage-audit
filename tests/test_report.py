@@ -359,11 +359,58 @@ def test_load_sessions_reconstructs_contiguous(db_loaded: sqlite3.Connection) ->
 def test_action_report_flags_idle_held(db_loaded: sqlite3.Connection) -> None:
     now = BASE + INTERVAL * 4
     rep = build_action_report(db_loaded, BASE - timedelta(seconds=1), now, timedelta(minutes=1))
-    # bob 은 70GB 잡고 util 2% → 조치 대상. alice(util 80)는 실사용이라 제외.
-    assert [s.pid for s in rep.actions] == [200]
-    assert rep.actions[0].owner == "bob"
-    # GPU-0 은 실가동, GPU-1 은 유휴점유 → 내내 빈 카드 없음.
-    assert rep.free_cards == []
+    # bob 은 70GB 잡고 util 2%, 최신 tick 까지 살아있음 → 현재 조치 대상.
+    assert [s.pid for s in rep.current_actions] == [200]
+    assert rep.current_actions[0].owner == "bob"
+    assert rep.past_waste == []
+    # 최신 tick(ts30) 에 GPU-0 은 프로세스 없음 → 현재 비어있음.
+    assert "GPU-0" in [u for _, u in rep.free_cards]
+
+
+def test_ended_session_goes_to_past_not_current(db_empty: sqlite3.Connection) -> None:
+    host = _fixture_host()
+    py = Snapshot(
+        gpus=[GPUSample(uuid="GPU-0", util_pct=2)],
+        procs=[ProcSample(gpu_uuid="GPU-0", pid=100, mem_used_mb=5000, loginuid_user="alice")],
+    )
+    empty = Snapshot(gpus=[GPUSample(uuid="GPU-0", util_pct=0)], procs=[])
+    write_snapshot(db_empty, BASE, host, py)
+    write_snapshot(db_empty, BASE + INTERVAL, host, py)  # 점유 여기서 끝
+    write_snapshot(db_empty, BASE + timedelta(hours=1), host, empty)  # 최신 tick — 카드 빔
+    latest = BASE + timedelta(hours=1)
+    rep = build_action_report(db_empty, BASE - timedelta(seconds=1), latest, timedelta(hours=2))
+    assert rep.current_actions == []  # 이미 종료 → 현재 조치 대상 아님
+    assert [s.pid for s in rep.past_waste] == [100]  # 낭비 이력으로
+    assert rep.gpus[0].state == "empty"  # 현재 비어있음
+    assert rep.free_cards == [(None, "GPU-0")]
+
+
+def test_graphics_process_excluded(db_empty: sqlite3.Connection) -> None:
+    host = _fixture_host()
+    snap = Snapshot(
+        gpus=[GPUSample(uuid="GPU-0", util_pct=0)],
+        procs=[
+            ProcSample(
+                gpu_uuid="GPU-0",
+                pid=7,
+                mem_used_mb=400,
+                loginuid_user="gdm",
+                process_name="Xorg",
+                process_type="graphics",
+            )
+        ],
+    )
+    write_snapshot(db_empty, BASE, host, snap)
+    write_snapshot(db_empty, BASE + INTERVAL, host, snap)
+    latest = BASE + INTERVAL
+    # graphics 는 세션·점유·현재상태 어디에도 안 잡힌다.
+    assert load_sessions(db_empty, BASE - timedelta(seconds=1)) == []
+    rep = build_action_report(db_empty, BASE - timedelta(seconds=1), latest, timedelta(hours=1))
+    assert rep.current_actions == []
+    assert rep.past_waste == []
+    assert rep.gpus[0].state == "empty"
+    assert rep.gpus[0].process_name is None
+    assert rep.free_cards == [(None, "GPU-0")]
 
 
 def test_load_sessions_splits_on_gap(db_empty: sqlite3.Connection) -> None:
