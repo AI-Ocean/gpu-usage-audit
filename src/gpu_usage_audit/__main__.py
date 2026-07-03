@@ -48,7 +48,7 @@ from .cloud.ws_client import start_util_stream_thread
 from .daemon import install_signal_handlers, resolve_proc_identities, run_daemon
 from .db import open_db, write_snapshot
 from .doctor import build_doctor_report, doctor_report_to_dict, render_doctor
-from .identity import system_process_name_lookup, system_user_lookup
+from .identity import system_owner_lookup, system_process_name_lookup, system_user_lookup
 from .live_view import run_top
 from .model import HostMeta, Snapshot
 from .nvml import NVMLNotAvailableError, NVMLTier
@@ -60,21 +60,8 @@ from .paths import (
     expand_path,
     is_default_db_path,
 )
-from .render import (
-    render_headline,
-    render_heatmap,
-    render_idle_capacity,
-    render_per_gpu,
-    render_top_identities,
-)
-from .report import (
-    load_headline,
-    load_heatmap,
-    load_host,
-    load_idle_capacity,
-    load_per_gpu,
-    load_top_identities,
-)
+from .render import render_action_report
+from .report import build_action_report
 from .tier import FakeTier, Tier
 from .usage_state import classify_usage_states
 
@@ -520,7 +507,12 @@ def _cmd_gua_sync_once(args: argparse.Namespace) -> int:
                 return _push_error_heartbeat(config, hostname, observed_at, exc)
             snap = nvml_tier.collect(observed_at)
             process_list_unavailable = nvml_tier.last_process_list_unavailable
-            resolve_proc_identities(snap.procs, system_user_lookup, system_process_name_lookup)
+            resolve_proc_identities(
+                snap.procs,
+                system_user_lookup,
+                system_process_name_lookup,
+                system_owner_lookup,
+            )
             classify_usage_states(snap, sync_once=True)
         finally:
             nvml_tier.close()
@@ -862,6 +854,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 interval=args.interval,
                 lookup=system_user_lookup,
                 name_lookup=system_process_name_lookup,
+                owner_lookup=system_owner_lookup,
                 stop=stop,
                 on_tick=on_tick,
             )
@@ -889,18 +882,10 @@ def _cmd_report(args: argparse.Namespace) -> int:
         return 2
     conn = open_db(db_path)
     try:
-        cutoff = datetime.now(UTC) - args.since
-        host = load_host(conn)
-        headline = load_headline(conn, cutoff)
-        idle_capacity = load_idle_capacity(conn, cutoff, args.interval)
-        per_gpu = load_per_gpu(conn, cutoff)
-        top = load_top_identities(conn, cutoff, args.interval)
-        heat = load_heatmap(conn, cutoff)
-        render_headline(sys.stdout, host, headline, args.since, args.width)
-        render_idle_capacity(sys.stdout, idle_capacity)
-        render_per_gpu(sys.stdout, per_gpu)
-        render_top_identities(sys.stdout, top)
-        render_heatmap(sys.stdout, heat)
+        now = datetime.now(UTC)
+        cutoff = now - args.since
+        rep = build_action_report(conn, cutoff, now, args.since, args.interval)
+        render_action_report(sys.stdout, rep)
         return 0
     finally:
         conn.close()
@@ -950,13 +935,10 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         # 리포트 단계: 데이터 *전체* 윈도우 (since 를 충분히 크게).
         print(file=sys.stderr)
         window = max(args.interval * args.ticks * 2, timedelta(minutes=1))
-        cutoff = datetime.now(UTC) - window
-        loaded_host = load_host(conn)
-        render_headline(sys.stdout, loaded_host, load_headline(conn, cutoff), window, width=60)
-        render_idle_capacity(sys.stdout, load_idle_capacity(conn, cutoff, args.interval))
-        render_per_gpu(sys.stdout, load_per_gpu(conn, cutoff))
-        render_top_identities(sys.stdout, load_top_identities(conn, cutoff, args.interval))
-        render_heatmap(sys.stdout, load_heatmap(conn, cutoff))
+        now = datetime.now(UTC)
+        cutoff = now - window
+        rep = build_action_report(conn, cutoff, now, window, args.interval)
+        render_action_report(sys.stdout, rep)
         return 0
     finally:
         conn.close()

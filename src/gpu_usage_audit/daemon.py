@@ -59,15 +59,19 @@ def resolve_proc_identities(
     procs: list[ProcSample],
     user_lookup: UserLookup,
     name_lookup: UserLookup,
+    owner_lookup: UserLookup = _noop_lookup,
 ) -> None:
-    """미해결(None) loginuid_user / process_name 을 제자리에서 채운다.
+    """미해결(None) loginuid_user / owner_user / process_name 을 제자리에서 채운다.
 
     이미 채워진 항목(FakeTier 가 미리 박은 값)은 건드리지 않는다. daemon
     틱과 cloud sync-once 가 같은 해석 규칙을 공유하도록 한곳에 모음.
+    owner_lookup 은 best-effort — 미주입(테스트/데모)이면 owner_user 는 None.
     """
     for p in procs:
         if p.loginuid_user is None:
             p.loginuid_user = user_lookup(p.pid)
+        if p.owner_user is None:
+            p.owner_user = owner_lookup(p.pid)
         if p.process_name is None:
             p.process_name = name_lookup(p.pid)
 
@@ -78,6 +82,7 @@ def _tick(
     host: HostMeta,
     lookup: UserLookup,
     name_lookup: UserLookup,
+    owner_lookup: UserLookup,
     ts: datetime,
     n: int,
     out: TextIO,
@@ -92,7 +97,7 @@ def _tick(
     """
     snap = tier.collect(ts)
     # ProcSample/GPUSample 이 mutable slots — *제자리* 갱신.
-    resolve_proc_identities(snap.procs, lookup, name_lookup)
+    resolve_proc_identities(snap.procs, lookup, name_lookup, owner_lookup)
     if usage_tracker is not None:
         usage_tracker.apply(snap)
     write_snapshot(db, ts, host, snap, run_id=run_id)
@@ -116,6 +121,7 @@ def run_daemon(
     interval: timedelta,
     lookup: UserLookup = _noop_lookup,
     name_lookup: UserLookup = _noop_lookup,
+    owner_lookup: UserLookup = _noop_lookup,
     stop: threading.Event | None = None,
     max_ticks: int | None = None,
     out: TextIO | None = None,
@@ -161,6 +167,7 @@ def run_daemon(
                 host,
                 lookup,
                 name_lookup,
+                owner_lookup,
                 datetime.now(UTC),
                 n,
                 out,

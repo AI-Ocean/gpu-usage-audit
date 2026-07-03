@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS proc_sample (
     pid           INTEGER  NOT NULL,
     mem_used_mb   INTEGER,
     loginuid_user TEXT,
+    owner_user    TEXT,
     run_id        INTEGER REFERENCES daemon_run(id),
     gpu_index     INTEGER,
     process_name  TEXT,
@@ -121,6 +122,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "proc_sample", "gpu_index", "INTEGER")
     _ensure_column(conn, "proc_sample", "process_name", "TEXT")
     _ensure_column(conn, "proc_sample", "process_type", "TEXT NOT NULL DEFAULT 'compute'")
+    # 프로세스 실 uid 소유자 (loginuid 미설정 프로세스의 소유자 폴백).
+    _ensure_column(conn, "proc_sample", "owner_user", "TEXT")
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, tuple[Any, ...]]:
@@ -295,9 +298,9 @@ def write_snapshot(
         if snap.procs:
             conn.executemany(
                 "INSERT INTO proc_sample"
-                "(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, gpu_index, "
+                "(ts, gpu_uuid, pid, mem_used_mb, loginuid_user, owner_user, gpu_index, "
                 "process_name, run_id, process_type) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         ts_str,
@@ -305,6 +308,7 @@ def write_snapshot(
                         p.pid,
                         p.mem_used_mb,
                         p.loginuid_user,
+                        p.owner_user,
                         p.gpu_index,
                         p.process_name,
                         run_id,

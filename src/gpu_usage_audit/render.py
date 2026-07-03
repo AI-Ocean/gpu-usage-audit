@@ -9,11 +9,11 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TextIO
 
 from .model import HostRow
-from .report import Headline, HeatmapCell, IdleCapacity, PerGPU, TopIdentity
+from .report import ActionReport, Headline, HeatmapCell, IdleCapacity, PerGPU, Session, TopIdentity
 
 # 카테고리별로 *다른 글자* 를 써서 색깔 없이도 시각적 구분이 되게.
 GLYPH_ACTIVE = "█"  # 가장 진한 블록
@@ -152,3 +152,108 @@ def render_heatmap(w: TextIO, cells: list[HeatmapCell]) -> None:
             idx = max(1, round(grid[dow][hour] * (len(HEATMAP_DENSITY) - 1)))
             cells_str.append(HEATMAP_DENSITY[idx])
         print(f"  {label}   " + " ".join(cells_str), file=w)
+
+
+# ── Action report ───────────────────────────────────────────────
+#
+# "통계" 대신 "조치 리스트" — 잡고 안 쓰는 카드(누가·언제~언제·얼마나)와
+# 즉시 배정 가능한 빈 카드만 보여준다. GPU-hours/히트맵 같은 추상치는 뺌.
+RULE = "─" * 66
+
+
+def _fmt_since(td: timedelta) -> str:
+    s = int(td.total_seconds())
+    if s and s % 86400 == 0:
+        return f"{s // 86400}일"
+    if s and s % 3600 == 0:
+        return f"{s // 3600}시간"
+    if s % 60 == 0:
+        return f"{s // 60}분"
+    return str(td)
+
+
+def _fmt_ago(delta: timedelta) -> str:
+    s = int(delta.total_seconds())
+    if s < 90:
+        return f"{s}초 전"
+    if s < 5400:
+        return f"{s // 60}분 전"
+    return f"{s // 3600}시간 전"
+
+
+def _gpu_label(index: int | None, uuid: str) -> str:
+    # NVML uuid "GPU-<8hex>-..." → 첫 세그먼트가 관례적 축약형.
+    parts = uuid.split("-")
+    short = parts[1] if len(parts) > 1 and parts[0] == "GPU" else uuid[:8]
+    if index is None:
+        return f"GPU {short}"
+    core = "" if short == str(index) else f" {short}"
+    return f"GPU#{index}{core}"
+
+
+def _render_session(w: TextIO, s: Session, host: str, now: datetime) -> None:
+    label = _gpu_label(s.gpu_index, s.gpu_uuid)
+    pad = " " * (len(label) + 3)
+    shared = " · 공유카드(util은 카드전체)" if s.shared else ""
+    since_end = now - s.end
+    if since_end.total_seconds() < 300:
+        span = f"{s.start:%m-%d %H:%M} ~ 계속 (마지막 {_fmt_ago(since_end)})"
+    else:
+        span = f"{s.start:%m-%d %H:%M} ~ {s.end:%m-%d %H:%M}"
+    print(
+        f"  {label}   {s.owner:<14}  {s.duration_h:.1f}h 점유 · "
+        f"util 평균 {s.avg_util:.0f}%{shared} · 최대 {s.peak_mem_mb:,}MB",
+        file=w,
+    )
+    login_note = "" if s.has_login else "  (로그인 세션 밖: 시스템·컨테이너 가능)"
+    print(f"{pad}{s.process_name} (pid {s.pid}){login_note}   {span}", file=w)
+    idx = s.gpu_index if s.gpu_index is not None else "?"
+    if s.has_login:
+        action = f"확인·회수:  ssh {host} 'nvidia-smi -i {idx}'  →  kill {s.pid}"
+    else:
+        action = f"확인:  ssh {host} 'nvidia-smi -i {idx}'  (사용자 작업인지 판단)"
+    print(f"{pad}↳ {action}", file=w)
+    print(file=w)
+
+
+def render_action_report(w: TextIO, rep: ActionReport) -> None:
+    host = rep.host.hostname or "unknown"
+    ctx = rep.host.env_kind or "?"
+    meta = f"NVML {rep.interval_label} 샘플 · {rep.total_samples:,} 관측"
+    print(f"GPU 낭비 진단 · {host} ({ctx}) · 최근 {_fmt_since(rep.since)}    {meta}", file=w)
+    print(file=w)
+
+    if rep.total_samples == 0:
+        print("  (관측 구간에 데이터 없음 — 데몬이 아직 안 돌았거나 --since 범위 밖)", file=w)
+        return
+
+    print(
+        f"{rep.gpu_count}장 중 평균 {rep.idle_equiv:.1f}장이 놀았습니다."
+        f"   잡고도 안 쓴 시간 ≈ {rep.held_gpu_hours:.0f} GPU-시간.",
+        file=w,
+    )
+    print(file=w)
+
+    print(f"■ 조치 필요 — 잡고 안 쓰는 카드 ({len(rep.actions)}건)", file=w)
+    print(file=w)
+    if not rep.actions:
+        print("  없음 — 점유된 카드가 모두 실사용 중이거나 비어 있습니다.", file=w)
+        print(file=w)
+    for s in rep.actions:
+        _render_session(w, s, host, rep.now)
+
+    print(f"■ 즉시 가용 — 관측 내내 빈 카드 ({len(rep.free_cards)}장)", file=w)
+    print(file=w)
+    if rep.free_cards:
+        labels = "  ".join(f"GPU#{i}" if i is not None else uuid[:8] for i, uuid in rep.free_cards)
+        print(f"  {labels}   →  지금 바로 배정 가능", file=w)
+    else:
+        print("  없음.", file=w)
+    print(file=w)
+
+    print(RULE, file=w)
+    print(
+        "util = NVML GPU 단위(카드 공유 시 프로세스 귀속 불가) · "
+        "소유 = 로그인 사용자 우선, 없으면 프로세스 실 UID",
+        file=w,
+    )

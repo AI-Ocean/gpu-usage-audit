@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.0 - 2026-07-03
+
+- `gua report` is now an **action list**, not a stats dump. It reconstructs
+  *occupancy sessions* — which process held which card, from when to when,
+  and how little it actually used it — from the 30s samples, and surfaces two
+  things: **조치 필요** (cards held by a compute process at <10% util, ranked
+  by hold time, each with a `nvidia-smi`/`kill` hint) and **즉시 가용** (cards
+  idle the whole window). Output is Korean. The old §1–§5 sections are gone
+  from the CLI (the underlying `load_*` queries remain).
+- Collect a best-effort process owner: the real UID of `/proc/<pid>` (new
+  nullable `proc_sample.owner_user`), used as the "who" when `loginuid` is
+  unset — daemons, containers, `nohup`'d jobs. Falls back to `unknown` when
+  the UID isn't in the host passwd (e.g. user-namespaced containers). Local
+  only; not added to the cloud snapshot, so the board is unaffected. The
+  column is an additive migration — existing DBs upgrade in place.
+
 ## 1.6.1 - 2026-06-29
 
 - `gua top` polish: show the GPU index, draw a `▁` baseline so 0% reads as a

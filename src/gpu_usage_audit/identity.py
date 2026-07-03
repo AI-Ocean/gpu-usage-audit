@@ -16,6 +16,27 @@ from pathlib import Path
 LOGIN_UID_UNSET = 4294967295  # UINT32_MAX, "loginuid 미설정" 의 sentinel.
 
 
+def system_owner_lookup(pid: int, proc_root: str | Path = "/proc") -> str | None:
+    """PID 를 소유한 실제 UNIX 사용자명 — `/proc/<pid>` 디렉토리의 소유 uid.
+
+    loginuid 와 달리 systemd/컨테이너/nohup 등 *로그인 세션 밖* 프로세스도
+    실 uid 는 있어서, loginuid 가 미설정인 경우의 소유자 폴백으로 쓴다.
+    best-effort: 컨테이너 user-namespace 처럼 host passwd 에 uid 가 없으면
+    None (그 경우 report 는 'unknown' 으로 떨어짐 — 감수).
+
+    None 분기: `/proc/<pid>` 없음(PID 사라짐), stat 실패, uid 가 시스템 user 아님.
+    """
+    path = Path(proc_root) / str(pid)
+    try:
+        uid = path.stat().st_uid
+    except OSError:
+        return None
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return None
+
+
 def _parse_loginuid(data: str) -> int | None:
     """loginuid 파일 내용 → uid 정수 or None.
 

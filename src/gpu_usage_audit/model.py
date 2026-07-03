@@ -69,6 +69,7 @@ class ProcSample:
     pid: int
     mem_used_mb: int | None
     loginuid_user: str | None = None
+    owner_user: str | None = None  # 프로세스 실 uid 소유자 (loginuid 미설정 시 폴백)
     gpu_index: int | None = None
     process_name: str | None = None
     process_type: ProcessType = "compute"

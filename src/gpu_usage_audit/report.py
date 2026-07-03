@@ -14,8 +14,11 @@ report 가 빠르다. 두 룰이 어긋나지 않는지는 통합 테스트가 �
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from itertools import groupby, pairwise
+from typing import Any
 
 from .db import _ts
 from .model import HostRow
@@ -325,3 +328,196 @@ def load_heatmap(conn: sqlite3.Connection, cutoff: datetime) -> list[HeatmapCell
             )
         )
     return out
+
+
+# ── Action report: 점유 세션 재구성 ─────────────────────────────
+#
+# proc_sample 을 (gpu_uuid, pid) 로 묶고 연속된 tick 을 이어붙여 "어떤
+# 프로세스가 언제~언제 카드를 점유했나" 세션을 복원한다. 구간의
+# gpu_sample.util 을 붙여 "얼마나 굴렸나"(카드 단위), mem_used_mb 로
+# "얼마나 쥐고 있었나"(프로세스 단위), loginuid_user/owner_user 로 "누구".
+#
+# util 은 카드 단위 값이라 한 카드를 여러 pid 가 나눠 쓰면 특정 프로세스에
+# 귀속되지 않는다 (shared 플래그로 표시). 메모리는 프로세스 단위라 정확.
+ACTIVE_UTIL = 10  # util>=이면 실가동 (classify 와 동일 임계).
+MEM_FLOOR_MB = 100  # 프로세스 메모리>이면 "점유" — framework 잔량 흡수.
+# ponytail: 이보다 오래 같은 pid 가 안 보이면 별개 세션으로 끊는다. 30~60s
+# 샘플의 2~3틱 결손을 흡수하고, 진짜로 죽었다 재시작한 건 나눈다.
+SESSION_GAP = timedelta(seconds=180)
+
+
+@dataclass(slots=True)
+class Session:
+    """한 프로세스가 한 카드를 연속 점유한 구간."""
+
+    gpu_uuid: str
+    gpu_index: int | None
+    pid: int
+    owner: str  # loginuid 우선, 없으면 실 uid, 둘 다 없으면 'unknown'
+    has_login: bool  # loginuid 로 해석됨 = 로그인 세션 프로세스(사용자 작업)
+    process_name: str
+    process_type: str  # 'compute' | 'graphics'
+    start: datetime
+    end: datetime
+    duration_h: float
+    avg_util: float  # 구간 평균 util (카드 단위)
+    active_frac: float  # util>=ACTIVE_UTIL 인 tick 비율
+    peak_mem_mb: int
+    samples: int
+    shared: bool  # 구간 중 같은 카드에 다른 pid 도 있었나
+
+
+def _first[T](values: Iterable[T | None]) -> T | None:
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def _make_session(
+    uuid: str,
+    pid: int,
+    group: list[Any],
+    util_map: dict[tuple[str, str], int],
+    multi: dict[tuple[str, str], int],
+) -> Session:
+    tss = [datetime.fromisoformat(r[8]) for r in group]
+    utils = [util_map[(uuid, r[8])] for r in group if (uuid, r[8]) in util_map]
+    mems = [r[7] for r in group if r[7] is not None]
+    login = _first(r[4] for r in group)
+    return Session(
+        gpu_uuid=uuid,
+        gpu_index=_first(r[1] for r in group),
+        pid=pid,
+        owner=_first(r[3] for r in group) or "unknown",
+        has_login=login is not None,
+        process_name=_first(r[5] for r in group) or "?",
+        process_type=_first(r[6] for r in group) or "compute",
+        start=tss[0],
+        end=tss[-1],
+        duration_h=(tss[-1] - tss[0]).total_seconds() / 3600.0,
+        avg_util=(sum(utils) / len(utils)) if utils else 0.0,
+        active_frac=(sum(1 for u in utils if u >= ACTIVE_UTIL) / len(utils)) if utils else 0.0,
+        peak_mem_mb=max(mems) if mems else 0,
+        samples=len(group),
+        shared=any(multi.get((uuid, r[8]), 0) > 1 for r in group),
+    )
+
+
+def load_sessions(
+    conn: sqlite3.Connection, cutoff: datetime, gap: timedelta = SESSION_GAP
+) -> list[Session]:
+    """cutoff 이후 proc_sample 을 (gpu, pid) 연속 구간(세션)으로 복원한다."""
+    since = _ts(cutoff)
+    util_map: dict[tuple[str, str], int] = {
+        (u, t): util
+        for u, t, util in conn.execute(
+            "SELECT gpu_uuid, ts, util_pct FROM gpu_sample WHERE ts >= ?", (since,)
+        )
+    }
+    rows = conn.execute(
+        "SELECT gpu_uuid, gpu_index, pid, COALESCE(loginuid_user, owner_user), "
+        "loginuid_user, process_name, process_type, mem_used_mb, ts "
+        "FROM proc_sample WHERE ts >= ? ORDER BY gpu_uuid, pid, ts",
+        (since,),
+    ).fetchall()
+
+    multi: dict[tuple[str, str], int] = {}
+    for r in rows:
+        k = (r[0], r[8])
+        multi[k] = multi.get(k, 0) + 1
+
+    sessions: list[Session] = []
+    for (uuid, pid), grp_iter in groupby(rows, key=lambda r: (r[0], r[2])):
+        grp = list(grp_iter)
+        chunk = [grp[0]]
+        for prev, nxt in pairwise(grp):
+            if datetime.fromisoformat(nxt[8]) - datetime.fromisoformat(prev[8]) > gap:
+                sessions.append(_make_session(uuid, pid, chunk, util_map, multi))
+                chunk = [nxt]
+            else:
+                chunk.append(nxt)
+        sessions.append(_make_session(uuid, pid, chunk, util_map, multi))
+    return sessions
+
+
+@dataclass(slots=True)
+class ActionReport:
+    host: HostRow
+    since: timedelta
+    now: datetime
+    interval_label: str
+    total_samples: int
+    gpu_count: int
+    idle_equiv: float  # 평균 몇 장이 (실가동 안 하고) 놀았나
+    held_gpu_hours: float  # 잡고도 안 쓴(idle-held) GPU-시간
+    actions: list[Session]  # 조치 대상: idle-held compute 세션 (지속시간 desc)
+    free_cards: list[tuple[int | None, str]]  # (gpu_index, uuid) — 내내 빈 카드
+
+
+def _interval_label(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT interval_seconds FROM daemon_run ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return "30초"
+    s = float(row[0])
+    if s >= 60 and s % 60 == 0:
+        return f"{int(s // 60)}분"
+    return f"{s:g}초"
+
+
+def _gpu_index_map(conn: sqlite3.Connection, cutoff: datetime) -> dict[str, int | None]:
+    return {
+        u: i
+        for u, i in conn.execute(
+            "SELECT gpu_uuid, MAX(gpu_index) FROM gpu_sample WHERE ts >= ? GROUP BY gpu_uuid",
+            (_ts(cutoff),),
+        )
+    }
+
+
+def build_action_report(
+    conn: sqlite3.Connection,
+    cutoff: datetime,
+    now: datetime,
+    since: timedelta,
+    interval: timedelta | None = None,
+) -> ActionReport:
+    idle_cap = load_idle_capacity(conn, cutoff, interval)
+    per_gpu = load_per_gpu(conn, cutoff)
+    sessions = load_sessions(conn, cutoff)
+    idx_map = _gpu_index_map(conn, cutoff)
+    total = conn.execute(
+        "SELECT COUNT(*) FROM gpu_sample WHERE ts >= ?", (_ts(cutoff),)
+    ).fetchone()[0]
+
+    # 조치 대상: compute 프로세스가 카드를 잡았으나 거의 안 쓴 세션.
+    actions = [
+        s
+        for s in sessions
+        if s.process_type == "compute" and s.avg_util < ACTIVE_UTIL and s.peak_mem_mb > MEM_FLOOR_MB
+    ]
+    actions.sort(key=lambda s: s.duration_h, reverse=True)
+
+    # 내내 빈 카드: 관측 구간에서 실가동/유휴점유가 전혀 없던 카드.
+    eps = 1e-9
+    free = [
+        (idx_map.get(pg.uuid), pg.uuid)
+        for pg in per_gpu
+        if pg.active <= eps and pg.idle_held <= eps
+    ]
+    free.sort(key=lambda t: (t[0] is None, t[0] if t[0] is not None else 0))
+
+    return ActionReport(
+        host=load_host(conn),
+        since=since,
+        now=now,
+        interval_label=_interval_label(conn),
+        total_samples=total,
+        gpu_count=len(per_gpu),
+        idle_equiv=idle_cap.truly_idle_equiv_gpus + idle_cap.idle_held_equiv_gpus,
+        held_gpu_hours=idle_cap.idle_held_gpu_hours,
+        actions=actions,
+        free_cards=free,
+    )
