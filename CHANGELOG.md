@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.1 - 2026-07-03
+
+- `gua report` gets a proper report layout instead of three terse blocks: a
+  masthead (host/driver, time range, sampling, generated-at), a summary line,
+  and two aligned box-drawing tables — **조치 필요** (idle-held cards, ranked)
+  and **전체 GPU 상태** (one row per card: state, avg util, peak mem, owner,
+  process). Numbers are right-aligned; the table renderer counts CJK width so
+  Korean headers line up. Per-card occupancy window and `nvidia-smi`/`kill`
+  hints move to detail lines under the action table. Still color-free and
+  dependency-free.
+
 ## 1.7.0 - 2026-07-03
 
 - `gua report` is now an **action list**, not a stats dump. It reconstructs

@@ -442,6 +442,67 @@ def load_sessions(
 
 
 @dataclass(slots=True)
+class GpuStatus:
+    """카드 한 장의 관측 구간 요약 — 전체 GPU 표 한 줄."""
+
+    gpu_index: int | None
+    gpu_uuid: str
+    state: str  # 'in_use' | 'idle_held' | 'empty'
+    avg_util: float
+    peak_mem_mb: int
+    owner: str | None  # 최장 점유 세션의 소유자
+    process_name: str | None
+
+
+def load_gpu_status(
+    conn: sqlite3.Connection, cutoff: datetime, sessions: list[Session]
+) -> list[GpuStatus]:
+    """카드별 avg util / peak mem / 상태 + 최장 점유 세션의 소유·프로세스."""
+    per_gpu = {pg.uuid: pg for pg in load_per_gpu(conn, cutoff)}
+    metrics = {
+        u: (avg or 0.0, peak or 0)
+        for u, avg, peak in conn.execute(
+            "SELECT gpu_uuid, AVG(util_pct), MAX(COALESCE(memory_used_mb, 0)) "
+            "FROM gpu_sample WHERE ts >= ? GROUP BY gpu_uuid",
+            (_ts(cutoff),),
+        )
+    }
+    idx_map = _gpu_index_map(conn, cutoff)
+
+    # 카드별 최장 세션(어떤 type이든) → 대표 소유자/프로세스.
+    top: dict[str, Session] = {}
+    for s in sessions:
+        cur = top.get(s.gpu_uuid)
+        if cur is None or s.duration_h > cur.duration_h:
+            top[s.gpu_uuid] = s
+
+    eps = 1e-9
+    out: list[GpuStatus] = []
+    for uuid, pg in per_gpu.items():
+        if pg.active > eps:
+            state = "in_use"
+        elif pg.idle_held > eps:
+            state = "idle_held"
+        else:
+            state = "empty"
+        avg_util, peak_mem = metrics.get(uuid, (0.0, 0))
+        rep = top.get(uuid)
+        out.append(
+            GpuStatus(
+                gpu_index=idx_map.get(uuid),
+                gpu_uuid=uuid,
+                state=state,
+                avg_util=avg_util,
+                peak_mem_mb=peak_mem,
+                owner=rep.owner if rep else None,
+                process_name=rep.process_name if rep else None,
+            )
+        )
+    out.sort(key=lambda g: (g.gpu_index is None, g.gpu_index if g.gpu_index is not None else 0))
+    return out
+
+
+@dataclass(slots=True)
 class ActionReport:
     host: HostRow
     since: timedelta
@@ -449,9 +510,13 @@ class ActionReport:
     interval_label: str
     total_samples: int
     gpu_count: int
+    active: float  # 실가동 비율 (샘플)
+    idle_held: float  # 유휴점유 비율
+    truly_idle: float  # 완전유휴 비율
     idle_equiv: float  # 평균 몇 장이 (실가동 안 하고) 놀았나
     held_gpu_hours: float  # 잡고도 안 쓴(idle-held) GPU-시간
     actions: list[Session]  # 조치 대상: idle-held compute 세션 (지속시간 desc)
+    gpus: list[GpuStatus]  # 전체 GPU 상태 (index 순)
     free_cards: list[tuple[int | None, str]]  # (gpu_index, uuid) — 내내 빈 카드
 
 
@@ -485,9 +550,9 @@ def build_action_report(
     interval: timedelta | None = None,
 ) -> ActionReport:
     idle_cap = load_idle_capacity(conn, cutoff, interval)
-    per_gpu = load_per_gpu(conn, cutoff)
+    headline = load_headline(conn, cutoff)
     sessions = load_sessions(conn, cutoff)
-    idx_map = _gpu_index_map(conn, cutoff)
+    gpus = load_gpu_status(conn, cutoff, sessions)
     total = conn.execute(
         "SELECT COUNT(*) FROM gpu_sample WHERE ts >= ?", (_ts(cutoff),)
     ).fetchone()[0]
@@ -501,13 +566,7 @@ def build_action_report(
     actions.sort(key=lambda s: s.duration_h, reverse=True)
 
     # 내내 빈 카드: 관측 구간에서 실가동/유휴점유가 전혀 없던 카드.
-    eps = 1e-9
-    free = [
-        (idx_map.get(pg.uuid), pg.uuid)
-        for pg in per_gpu
-        if pg.active <= eps and pg.idle_held <= eps
-    ]
-    free.sort(key=lambda t: (t[0] is None, t[0] if t[0] is not None else 0))
+    free = [(g.gpu_index, g.gpu_uuid) for g in gpus if g.state == "empty"]
 
     return ActionReport(
         host=load_host(conn),
@@ -515,9 +574,13 @@ def build_action_report(
         now=now,
         interval_label=_interval_label(conn),
         total_samples=total,
-        gpu_count=len(per_gpu),
+        gpu_count=len(gpus),
+        active=headline.active,
+        idle_held=headline.idle_held,
+        truly_idle=headline.truly_idle,
         idle_equiv=idle_cap.truly_idle_equiv_gpus + idle_cap.idle_held_equiv_gpus,
         held_gpu_hours=idle_cap.idle_held_gpu_hours,
         actions=actions,
+        gpus=gpus,
         free_cards=free,
     )

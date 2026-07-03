@@ -473,9 +473,9 @@ def test_demo_command_records_and_prints_report(
     assert rc == 0
     # action report 의 핵심 섹션 등장.
     for section in (
-        "GPU 낭비 진단",
+        "진단 리포트",
         "■ 조치 필요",
-        "■ 즉시 가용",
+        "■ 전체 GPU 상태",
     ):
         assert section in captured.out, f"{section} not in demo output"
     # DB 파일 생성됐는지.
@@ -500,7 +500,7 @@ def test_gua_demo_command_records_and_prints_report(
     )
     captured = capsys.readouterr()
     assert rc == 0
-    assert "GPU 낭비 진단" in captured.out
+    assert "진단 리포트" in captured.out
     assert db_path.exists()
 
 
