@@ -91,22 +91,79 @@ def post_observation(
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _post_json(
-    url: str,
-    payload: dict[str, Any],
+def list_archives(
+    config: CloudConfig,
     *,
+    timeout: float = 10.0,
+) -> list[tuple[str, str]]:
+    """이 host 가 이미 저장한 (date, table) 목록 — 없는 것만 올리기 위한 diff 용."""
+    body = _request(
+        f"{config.server_url}/agent/v1/archives",
+        method="GET",
+        timeout=timeout,
+        headers={"Authorization": f"Bearer {config.agent_token}"},
+    )
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise CloudError("GUA Board server returned invalid JSON") from exc
+    archives = data.get("archives", []) if isinstance(data, dict) else []
+    return [
+        (a["date"], a["table"])
+        for a in archives
+        if isinstance(a, dict) and "date" in a and "table" in a
+    ]
+
+
+def put_archive(
+    config: CloudConfig,
+    *,
+    day: str,
+    table: str,
+    data: bytes,
+    timeout: float = 60.0,
+) -> None:
+    """하루치 gzip CSV 를 board 로 올린다 (board 가 object storage 에 씀)."""
+    _request(
+        f"{config.server_url}/agent/v1/archives?date={day}&table={table}",
+        method="POST",
+        data=data,
+        timeout=timeout,
+        headers={
+            "Authorization": f"Bearer {config.agent_token}",
+            "Content-Type": "application/gzip",
+        },
+    )
+
+
+def prune_archives(
+    config: CloudConfig,
+    *,
+    retention_days: int,
+    timeout: float = 10.0,
+) -> None:
+    """보존 창(일)을 넘은 이 host 의 아카이브를 board 가 지우게 한다."""
+    _request(
+        f"{config.server_url}/agent/v1/archives?olderThanDays={retention_days}",
+        method="DELETE",
+        timeout=timeout,
+        headers={"Authorization": f"Bearer {config.agent_token}"},
+    )
+
+
+def _request(
+    url: str,
+    *,
+    method: str,
+    data: bytes | None = None,
     timeout: float,
     headers: dict[str, str] | None = None,
 ) -> str:
     request = Request(
         url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            **(headers or {}),
-        },
-        method="POST",
+        data=data,
+        headers={"Accept": "application/json", **(headers or {})},
+        method=method,
     )
     try:
         with urlopen(request, timeout=timeout) as response:
@@ -117,6 +174,22 @@ def _post_json(
     except URLError as exc:
         reason = getattr(exc, "reason", exc)
         raise CloudError(f"could not reach GUA Board server: {reason}") from exc
+
+
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> str:
+    return _request(
+        url,
+        method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+        timeout=timeout,
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
 
 
 def _optional_text(value: str | None) -> str | None:
