@@ -1,6 +1,6 @@
 [project]
 name = "gpu-usage-audit"
-version = "1.7.2"
+version = "1.8.0"
 description = "Single-host daemon that surfaces 'idle-held' NVIDIA GPU memory — the embarrassing category conventional dashboards miss."
 readme = "README.md"
 license = { file = "LICENSE" }

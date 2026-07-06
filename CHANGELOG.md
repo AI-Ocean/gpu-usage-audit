@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.8.0 - 2026-07-06
+
+- `gua sync-archive`: upload complete past days of raw history (`gpu_sample`,
+  `proc_sample`) plus the `daemon_run`/`gpu_device` dimension tables to GUA
+  Board as gzip CSV, so usage reports can be rebuilt from raw at any time.
+  Idempotent — only the days the board is missing are uploaded, bounded to a
+  30-day retention window; the board prunes older objects. ~0.2 MB/host/day
+  gzipped, so it stays well inside a Supabase free-tier bucket.
+- `gua daemon --cloud` runs the archive itself — once on startup and once per
+  UTC day, in a background thread that never blocks sampling — so operators
+  just enroll and run the daemon; no separate cron to install. Raw archive
+  (not rollups) keeps full fidelity and is agnostic to the sampling interval.
+
 ## 1.7.2 - 2026-07-03
 
 - Fix a misleading `gua report`: a card held days ago and since released was

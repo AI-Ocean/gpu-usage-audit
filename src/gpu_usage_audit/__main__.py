@@ -32,6 +32,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import __version__
+from .cloud.archive import DEFAULT_RETENTION_DAYS
+from .cloud.archive_sync import DailyArchiveScheduler, sync_archive_once
 from .cloud.client import CloudError, claim_enrollment, post_observation
 from .cloud.config import (
     CloudConfig,
@@ -379,6 +381,28 @@ def build_gua_parser() -> argparse.ArgumentParser:
     )
     p_sync.set_defaults(func=_cmd_gua_sync_once)
 
+    p_archive = sub.add_parser(
+        "sync-archive",
+        help="Upload closed-day raw history (gzip CSV) to GUA Board object storage",
+    )
+    p_archive.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help=f"Local SQLite history database [default: {DEFAULT_DB_PATH}]",
+    )
+    p_archive.add_argument(
+        "--config",
+        default=str(DEFAULT_CLOUD_CONFIG_PATH),
+        help=f"Cloud config path [default: {DEFAULT_CLOUD_CONFIG_PATH}]",
+    )
+    p_archive.add_argument(
+        "--retention-days",
+        type=int,
+        default=DEFAULT_RETENTION_DAYS,
+        help=f"Days of history kept in storage [default: {DEFAULT_RETENTION_DAYS}]",
+    )
+    p_archive.set_defaults(func=_cmd_gua_sync_archive)
+
     sub.add_parser("version", help="Print version")
     sub.add_parser("help", help="Show this message")
 
@@ -472,6 +496,42 @@ def _cmd_gua_enroll(args: argparse.Namespace) -> int:
     print(f"  token prefix: {config.token_prefix}")
     print(f"  config: {saved}")
     print("  next: gua sync-once")
+    return 0
+
+
+def _cmd_gua_sync_archive(args: argparse.Namespace) -> int:
+    """마감된 날들의 raw 를 gzip CSV 로 object storage 에 올린다 (board 경유).
+
+    멱등: board 에 이미 있는 (날짜,테이블)은 건너뛰고 없는 것만 올린다. 보존
+    창(기본 30일)을 넘은 아카이브는 board 가 프룬한다. 데몬이 자동으로도 돌리며
+    (기동 시 1회 + 매일), 이 명령은 수동/백필용 — 재실행은 gap 만 채운다.
+    """
+    try:
+        config = load_cloud_config(args.config)
+    except CloudConfigError as exc:
+        print(f"gua sync-archive: {exc}", file=sys.stderr)
+        return 2
+
+    db_path = expand_path(args.db)
+    if not db_path.exists():
+        print(f"gua sync-archive: no local history database at {db_path}", file=sys.stderr)
+        return 2
+
+    try:
+        result = sync_archive_once(
+            config,
+            db_path=db_path,
+            today=datetime.now(UTC).date(),
+            retention_days=args.retention_days,
+        )
+    except CloudError as exc:
+        print(f"gua sync-archive: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"gua sync-archive: {result.days} closed day(s) in {args.retention_days}d window, "
+        f"uploaded {result.uploaded} missing object(s)"
+    )
     return 0
 
 
@@ -826,7 +886,15 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                     )
                     post_observation(cloud_config, payload)
 
-                on_tick = push_snapshot
+                archive_scheduler = DailyArchiveScheduler(cloud_config, db_path=db_path)
+
+                def on_tick(snap: Snapshot, ts: datetime) -> None:
+                    push_snapshot(snap, ts)
+                    # 데몬이 하루 1회(+기동 시) raw 아카이브를 백그라운드 스레드로 올린다 —
+                    # 별도 cron 불필요. push 실패는 daemon._tick 이 잡고, 아카이브는 날짜
+                    # gate 로 다음 틱에 재시도된다.
+                    archive_scheduler.maybe_run(ts.date())
+
                 print(
                     f"{display_command}: cloud sync enabled -> "
                     f"{cloud_config.display_name} ({cloud_config.server_url})"
