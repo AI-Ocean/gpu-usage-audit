@@ -29,7 +29,13 @@ def _db() -> sqlite3.Connection:
             ("2026-06-29T08:00:00+00:00", "G", 50, 0, "active"),  # closed, in window
             ("2026-06-30T09:00:00+00:00", "G", 0, 1, "idle_held"),  # closed, in window
             ("2026-07-06T01:00:00+00:00", "G", 10, 0, "idle"),  # today -> excluded
-            ("2026-06-30T09:00:30+00:00", "G", 77, None, "active"),  # raw is kept regardless of index
+            (
+                "2026-06-30T09:00:30+00:00",
+                "G",
+                77,
+                None,
+                "active",
+            ),  # raw is kept regardless of index
         ],
     )
     conn.execute("INSERT INTO proc_sample VALUES('2026-06-30T09:00:00+00:00','G',4018648,'python')")
