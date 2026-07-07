@@ -38,6 +38,7 @@ Two ways to see it: **live** with `gua top` (1s utilization graph + per-GPU proc
 - Daemon interval metadata stored per run, so reports compute GPU-hours correctly across mixed 30s / 10s runs
 - GPU-less `gua demo` command with deterministic fake telemetry
 - Optional cloud sync to [GUA Board](#cloud-sync-gua-board-optional): the same 1s util stream, surfaced across many hosts in one web view
+- Optional daily archive to GUA Board: each completed day's raw history uploaded as gzip CSV (~0.2 MB/host/day) so usage reports can be rebuilt from raw
 - No cluster runtime dependency; no Kubernetes, Slurm, Docker, or remote-node scan
 
 ## Installation
@@ -58,8 +59,8 @@ uv tool uninstall gpu-usage-audit
 Manual wheel downloads are available from GitHub Releases (swap in the [latest tag](https://github.com/AI-Ocean/gpu-usage-audit/releases)):
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.6.1"
-WHEEL="gpu_usage_audit-1.6.1-py3-none-any.whl"
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.8.0"
+WHEEL="gpu_usage_audit-1.8.0-py3-none-any.whl"
 
 curl -fsSLO "$BASE/$WHEEL"
 curl -fsSLO "$BASE/SHA256SUMS"
@@ -139,14 +140,16 @@ Reports can run while the daemon is writing; SQLite WAL mode handles concurrent 
 | `gua demo` | Generate a fake local report without a GPU |
 | `gua enroll` | Connect this host to a GUA Board workspace (optional cloud sync) |
 | `gua sync-once` | Collect one snapshot and push the latest state to GUA Board |
+| `gua sync-archive` | Upload closed-day raw history to GUA Board so reports can be rebuilt (the `--cloud` daemon does this automatically) |
 | `gua version` | Print version |
 
 ## Important Options
 
 ```sh
 gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
-gua daemon --cloud [--config PATH]        # also stream to GUA Board (after `gua enroll`)
+gua daemon --cloud [--config PATH]        # also stream + daily-archive to GUA Board (after `gua enroll`)
 gua daemon --foreground [--db PATH] [--interval D]
+gua sync-archive [--db PATH] [--config PATH] [--retention-days N]   # manual/backfill archive upload
 gua top [--interval D] [--fake]
 gua report [--db PATH] [--since D] [--interval D] [--width N]
 gua demo [--db PATH] [--ticks N] [--interval D]
@@ -210,8 +213,9 @@ How it works and what it does not do:
 
 - `enroll` exchanges the one-time token for a host-scoped, write-only agent token, stored in `~/.gua/cloud.json` with mode `0600`. The token can only write this host's observations — it cannot read reservations, users, or other hosts.
 - `daemon --cloud` keeps writing local history as usual, and additionally streams the 1s util samples to the board (so the board's graphs scroll live) and pushes periodic snapshots. The board buffers util in memory only; it stores no per-second history.
+- `daemon --cloud` also **archives each completed day's raw history** — once on startup and once per UTC day, in a background thread — uploading it as gzip CSV to the board's object storage so usage reports can be rebuilt. Only closed days are sent; the last 30 days are kept and older archives are pruned. `gua sync-archive` runs the same thing manually.
 - `sync-once` collects one snapshot, **writes it to the local database first**, then pushes only the latest state. A failed push never blocks or rolls back the local write.
-- Only the latest state is sent. Historical ticks are kept locally and are never replayed to the server.
+- Live snapshots send only the *latest* state. Historical data leaves the host only as the daily archives above — completed days as compressed CSV, never per-tick replay — and full-resolution history always stays local.
 - Process telemetry is limited to PID, Linux user, process name (`/proc/<pid>/comm`), and GPU memory — never full command lines.
 - The agent only pushes outward. There is no tunnel, no pull, and no remote command execution — the board cannot reach into a host.
 
