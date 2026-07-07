@@ -38,6 +38,7 @@ gpu-usage-audit는 다른 dashboard가 놓치는 질문 하나에 답합니다 �
 - daemon run별 interval을 DB에 기록해 30초/10초 수집 run이 섞여도 GPU-hours 계산 유지
 - GPU가 없어도 실행 가능한 deterministic `gua demo`
 - [GUA Board](#cloud-sync-gua-board-선택)로의 선택적 cloud sync — 같은 1초 util 스트림을 여러 호스트에서 한 웹 화면으로
+- GUA Board로의 선택적 일별 아카이브 — 마감된 하루치 raw 이력을 gzip CSV(~0.2 MB/호스트/일)로 올려 사용 리포트를 raw에서 재구성
 - Kubernetes, Slurm, Docker, remote node scan은 다루지 않음
 
 ## 설치
@@ -58,8 +59,8 @@ uv tool uninstall gpu-usage-audit
 GitHub Releases에서 wheel을 직접 받을 수도 있습니다([최신 tag](https://github.com/AI-Ocean/gpu-usage-audit/releases)로 교체).
 
 ```sh
-BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.6.1"
-WHEEL="gpu_usage_audit-1.6.1-py3-none-any.whl"
+BASE="https://github.com/AI-Ocean/gpu-usage-audit/releases/download/v1.8.0"
+WHEEL="gpu_usage_audit-1.8.0-py3-none-any.whl"
 
 curl -fsSLO "$BASE/$WHEEL"
 curl -fsSLO "$BASE/SHA256SUMS"
@@ -139,14 +140,16 @@ gua — lab-a100 (bare, driver 560.35.05)  Window: 1:00:00
 | `gua demo` | GPU 없이 fake telemetry 리포트 출력 |
 | `gua enroll` | 이 호스트를 GUA Board workspace에 연결 (optional cloud sync) |
 | `gua sync-once` | 한 snapshot을 수집해 latest 상태를 GUA Board로 push |
+| `gua sync-archive` | 마감된 하루치 raw 이력을 GUA Board로 올려 리포트를 재구성 가능하게 함 (`--cloud` daemon이 자동 수행) |
 | `gua version` | 버전 출력 |
 
 ## 주요 옵션
 
 ```sh
 gua daemon [--db PATH] [--interval D] [--pid-file PATH] [--log-file PATH]
-gua daemon --cloud [--config PATH]        # GUA Board로도 스트리밍 (`gua enroll` 이후)
+gua daemon --cloud [--config PATH]        # GUA Board로 스트리밍 + 일별 아카이브 (`gua enroll` 이후)
 gua daemon --foreground [--db PATH] [--interval D]
+gua sync-archive [--db PATH] [--config PATH] [--retention-days N]   # 수동/백필 아카이브 업로드
 gua top [--interval D] [--fake]
 gua report [--db PATH] [--since D] [--interval D] [--width N]
 gua demo [--db PATH] [--ticks N] [--interval D]
@@ -210,8 +213,9 @@ gua sync-once
 
 - `enroll`은 one-time token을 host-scoped write-only agent token으로 교환해 `~/.gua/cloud.json`(mode `0600`)에 저장합니다. 이 token은 이 호스트의 observation만 write할 수 있고, reservation/사용자/다른 host는 읽지 못합니다.
 - `daemon --cloud`는 평소처럼 로컬 history를 계속 기록하면서, 추가로 1초 util 표본을 보드로 스트리밍하고(보드 그래프가 라이브로 흐름) 주기적 snapshot을 push합니다. 보드는 util을 메모리에만 버퍼하며 초단위 history를 저장하지 않습니다.
+- `daemon --cloud`는 또한 **마감된 하루치 raw 이력을 아카이브**합니다 — 기동 시 1회 + UTC 하루 1회, 백그라운드 스레드로 gzip CSV를 보드의 object storage에 올려 사용 리포트를 재구성할 수 있게 합니다. 마감된 날만 보내고, 최근 30일치만 보관하며 그보다 오래된 아카이브는 프룬합니다. `gua sync-archive`가 같은 일을 수동으로 합니다.
 - `sync-once`는 한 snapshot을 수집해 **먼저 로컬 DB에 기록한 뒤** latest 상태만 push합니다. push 실패는 로컬 write를 막거나 되돌리지 않습니다.
-- 항상 latest 상태만 전송합니다. 과거 tick은 로컬에 남고 서버로 replay되지 않습니다.
+- 라이브 snapshot은 *latest* 상태만 전송합니다. 과거 데이터가 호스트를 떠나는 것은 위 일별 아카이브뿐이며(마감된 날을 압축 CSV로, tick 단위 replay 아님), 전체 해상도 history는 항상 로컬에 남습니다.
 - process 정보는 PID, Linux user, process name(`/proc/<pid>/comm`), GPU memory로 제한되며 full command line은 절대 수집하지 않습니다.
 - 에이전트는 바깥으로 push만 합니다. tunnel도, pull도, 원격 명령 실행도 없습니다 — 보드가 호스트 안으로 들어올 수 없습니다.
 
